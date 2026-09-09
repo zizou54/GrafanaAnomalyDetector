@@ -1,0 +1,2 @@
+41636b8fe3f3797f07b871e819f13b128816ca35da927771c46f2ff8f5b3a974  grafana-anomaly-detector-plugin-1.5.1.zip
+398e7bca2a6568bf32b16a55a0f6f6b259f0510435da07c5d971cddc93d9f646  grafana-anomaly-exporter-bundle-1.5.1.zip
