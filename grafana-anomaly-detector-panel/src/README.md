@@ -34,4 +34,4 @@ The chart uses custom SVG. Native Time Series multi-axis, zoom/pan and shared-cu
 
 BUILD_INFO.json identifies the source commit and hashes for this package revision.
 Field-data calibration and target-host capacity qualification remain required; see the
-[r1 test record](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/docs/RELEASE_1_5_0_R1_VERIFICATION.md).
+[1.5.1 release gate](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/release/STATUS_v1.5.1.md).
