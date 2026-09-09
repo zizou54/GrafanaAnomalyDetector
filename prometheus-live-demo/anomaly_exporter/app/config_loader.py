@@ -504,6 +504,10 @@ def load_config(path: str | Path) -> AppConfig:
         algorithm = str(entry.get('algorithm', 'mad')).strip().lower()
         if algorithm not in SUPPORTED_ALGORITHMS:
             raise ConfigError(f'rules[{index}].algorithm must be one of: {sorted(SUPPORTED_ALGORITHMS)}')
+        if algorithm == 'harmonic':
+            period = _as_positive_int(entry.get('seasonality_samples'), f'rules[{index}].seasonality_samples', 24)
+            if not 8 <= period <= 4096:
+                raise ConfigError(f'rules[{index}].seasonality_samples must be 8-4096 for harmonic.')
 
         anomaly_direction = str(entry.get('anomaly_direction', 'high_or_low')).strip().lower()
         if anomaly_direction not in SUPPORTED_ANOMALY_DIRECTIONS:

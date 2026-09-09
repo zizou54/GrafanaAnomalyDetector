@@ -4,6 +4,9 @@ import math
 from dataclasses import dataclass, replace
 from datetime import datetime
 from statistics import median
+from .guarded_rolling import GuardedRollingState
+from .guarded_ewma import GuardedEwmaState
+from .guarded_seasonal import GuardedSeasonalState
 
 from .models import (
     MIN_BASELINE_POINTS,
@@ -65,7 +68,9 @@ def _safe_spread(spread: float, reference: float) -> float:
 
 
 def _bound_raw_score(score: float) -> float:
-    return max(0.0, min(MAX_RAW_SCORE, score)) if math.isfinite(score) else 0.0
+    if not math.isfinite(score) or score <= 0:
+        return 0.0
+    return MAX_RAW_SCORE if score > MAX_RAW_SCORE else score
 
 
 def _finite_or(value: float, fallback: float) -> float:
@@ -91,7 +96,22 @@ def _valid_raw_points(points: list[RawPoint]) -> list[RawPoint]:
     return valid
 
 
-def dedupe_consecutive_points(points: list[RawPoint]) -> list[RawPoint]:
+def _scoring_points(points: list[RawPoint]) -> list[RawPoint]:
+    # Scoring never mutates raw points. Already normalized, strictly ordered input
+    # can be borrowed; malformed/duplicate input retains the owned-copy path.
+    previous = -math.inf
+    for point in points:
+        if (not math.isfinite(point.time) or not math.isfinite(point.value)
+                or point.time <= previous or not math.isfinite(point.bucket_start)
+                or not math.isfinite(point.bucket_end) or not math.isfinite(point.min_value)
+                or not math.isfinite(point.max_value) or type(point.sample_count) is not int
+                or point.sample_count < 1):
+            return dedupe_consecutive_points(sorted(_valid_raw_points(points), key=lambda p: p.time), owned=True)
+        previous = point.time
+    return points
+
+
+def dedupe_consecutive_points(points: list[RawPoint], *, owned: bool = False) -> list[RawPoint]:
     merged: list[RawPoint] = []
     for point in points:
         previous = merged[-1] if merged else None
@@ -104,7 +124,7 @@ def dedupe_consecutive_points(points: list[RawPoint]) -> list[RawPoint]:
             previous.bucket_start = min(previous.bucket_start, point.bucket_start)
             previous.bucket_end = max(previous.bucket_end, point.bucket_end)
             continue
-        merged.append(RawPoint(**point.__dict__))
+        merged.append(point if owned else RawPoint(**point.__dict__))
     return merged
 
 
@@ -192,12 +212,22 @@ def _severity_state(raw_score: float, threshold: float, severity_preset: str) ->
     return normalized_score, label, raw_score >= threshold
 
 
+def _supported_window_score(current_value: float, center: float, expected: float, spread: float, boost: float = 1.0) -> float:
+    # Historical evidence cannot open a new anomaly on a recovered/opposite point.
+    # Explicit recovery persistence is applied separately by the decision policy.
+    deviation = current_value - expected
+    window_deviation = center - expected
+    if abs(deviation) <= spread or deviation * window_deviation <= 0:
+        return 0.0
+    return abs(window_deviation) / spread * boost
+
+
 def _window_score(history: list[float], current_value: float, expected: float, spread: float, window: int) -> float:
     context_window = min(max(3, window // 3), 10)
     recent = history[-(context_window - 1) :] + [current_value]
     if len(recent) < 3:
         return 0.0
-    return abs(_mean(recent) - expected) / spread
+    return _supported_window_score(current_value, _mean(recent), expected, spread)
 
 
 def _data_quality_state(points: list[RawPoint], index: int, baseline_window: int) -> str:
@@ -229,7 +259,7 @@ def _data_quality_state(points: list[RawPoint], index: int, baseline_window: int
     return 'healthy'
 
 
-def _data_quality_state_from_arrays(values: list[float], times: list[float], index: int, baseline_window: int) -> str:
+def _data_quality_state_from_arrays(values: list[float], times: list[float], index: int, baseline_window: int, *, regular_cadence: bool = False) -> str:
     start = max(0, index - baseline_window)
     history_len = index + 1 - start
     recent_start = max(start, index + 1 - max(4, min(baseline_window, 8)))
@@ -237,15 +267,12 @@ def _data_quality_state_from_arrays(values: list[float], times: list[float], ind
     if history_len < max(MIN_BASELINE_POINTS, baseline_window // 2):
         return 'thin'
 
-    if index + 1 - recent_start >= 3:
-        diffs = [times[offset + 1] - times[offset] for offset in range(recent_start, index) if times[offset + 1] - times[offset] > 0]
-        expected_step = median(diffs) if diffs else None
+    if not regular_cadence and index + 1 - recent_start >= 3:
+        diffs = [diff for offset in range(recent_start, index) if (diff := times[offset + 1] - times[offset]) > 0]
         smallest_step = min(diffs) if diffs else None
         largest_step = max(diffs) if diffs else None
-        if (
-            (expected_step and any(diff > expected_step * 2.4 for diff in diffs))
-            or (smallest_step and largest_step and largest_step > smallest_step * 1.8)
-        ):
+        # median >= min: the former max > 2.4*median check is subsumed by this.
+        if smallest_step and largest_step and largest_step > smallest_step * 1.8:
             return 'gappy'
 
     if index + 1 - recent_start >= 4:
@@ -260,7 +287,28 @@ def _data_quality_state_from_arrays(values: list[float], times: list[float], ind
 def _data_quality_states(points: list[RawPoint], baseline_window: int) -> list[str]:
     values = [point.value for point in points]
     times = [point.time for point in points]
-    return [_data_quality_state_from_arrays(values, times, index, baseline_window) for index in range(len(points))]
+    steps = [b - a for a, b in zip(times, times[1:])]
+    # If the entire cadence passes, every local window necessarily passes too.
+    # A later irregular sample selects the reference path, not different labels.
+    regular = bool(steps) and min(steps) > 0 and max(steps) <= min(steps) * 1.8
+    if regular:
+        minimum = max(MIN_BASELINE_POINTS, baseline_window // 2)
+        recent_size = min(baseline_window + 1, max(4, min(baseline_window, 8)))
+        states = []
+        for index in range(len(points)):
+            if min(index + 1, baseline_window + 1) < minimum:
+                states.append('thin')
+                continue
+            recent = values[max(0, index + 1 - recent_size):index + 1]
+            if len(recent) >= 4:
+                floor = max(abs(sum(recent) / len(recent)) * .002, 1e-6)
+                if max(recent) - min(recent) <= floor:
+                    states.append('flatline')
+                    continue
+            states.append('healthy')
+        return states
+    return [_data_quality_state_from_arrays(values, times, index, baseline_window, regular_cadence=regular)
+            for index in range(len(points))]
 
 
 def _confidence_state(
@@ -339,12 +387,16 @@ def _snapshot(
     include_window_score: bool = False,
     level_shift_score_driver: bool = False,
     level_shift_point_multiplier: float = 1.0,
+    window_score_override: float | None = None,
+    sample_count_override: int | None = None,
 ) -> SeriesSnapshot:
     point = points[index]
     if data_quality_label is None:
         data_quality_label = _data_quality_state(points, index, rule.baseline_window)
     point_raw_score = abs(point.value - expected) / spread
     window_raw_score = _window_score(history, point.value, expected, spread, rule.baseline_window) if include_window_score else 0.0
+    if window_score_override is not None:
+        window_raw_score = window_score_override
     raw_score = max(point_raw_score * level_shift_point_multiplier, window_raw_score)
     normalized_score, severity_label, is_anomaly = _severity_state(raw_score, rule.threshold, rule.severity_preset)
     confidence_score, confidence_label = _confidence_state(
@@ -352,7 +404,7 @@ def _snapshot(
         rule.threshold,
         point_raw_score,
         window_raw_score,
-        len(history) + 1,
+        len(history) + 1 if sample_count_override is None else sample_count_override,
         data_quality_label,
     )
     if level_shift_score_driver:
@@ -469,7 +521,7 @@ def _apply_decision_policy(rule: RuleConfig, snapshots: list[SeriesSnapshot]) ->
 
 
 def score_points(rule: RuleConfig, source_metric: str, labels: dict[str, str], raw_points: list[RawPoint]) -> list[SeriesSnapshot]:
-    points = dedupe_consecutive_points(sorted(_valid_raw_points(raw_points), key=lambda point: point.time))
+    points = _scoring_points(raw_points)
     if not points:
         return []
     threshold = max(rule.threshold, 0.2)
@@ -507,12 +559,31 @@ def score_points(rule: RuleConfig, source_metric: str, labels: dict[str, str], r
 
     quality_states = _data_quality_states(points, window)
 
-    if canonical_rule.algorithm == 'ewma':
-        snapshots = _score_ewma(canonical_rule, source_metric, labels, points, quality_states)
+    if canonical_rule.algorithm in ('zscore', 'mad', 'ewma'):
+        state = (GuardedEwmaState(window, threshold) if canonical_rule.algorithm == 'ewma'
+                 else GuardedRollingState(canonical_rule.algorithm, window, threshold))
+        snapshots = [_kernel_snapshot(canonical_rule, source_metric, labels, point,
+                                      state.update(point.value), quality_states[index], window + 1)
+                     for index, point in enumerate(points)]
+    elif canonical_rule.algorithm == 'harmonic':
+        from .harmonic import HarmonicState
+        state = HarmonicState(canonical_rule.seasonality_samples, threshold)
+        snapshots = [_harmonic_snapshot(canonical_rule, source_metric, labels, point,
+                                       state.update(point.value), quality_states[index])
+                     for index, point in enumerate(points)]
     elif canonical_rule.algorithm == 'seasonal':
-        snapshots = _score_seasonal(canonical_rule, source_metric, labels, points, quality_states)
+        if canonical_rule.seasonal_refinement == 'cycle' and canonical_rule.seasonality_samples >= 8:
+            state = GuardedSeasonalState(canonical_rule.seasonality_samples, window, threshold)
+            snapshots = [_kernel_snapshot(canonical_rule, source_metric, labels, point,
+                                          state.update(point.value), quality_states[index], window + 1)
+                         for index, point in enumerate(points)]
+        else:
+            snapshots = _score_seasonal(canonical_rule, source_metric, labels, points, quality_states)
     elif canonical_rule.algorithm == 'level_shift':
-        snapshots = _score_level_shift(canonical_rule, source_metric, labels, points, quality_states)
+        state = GuardedEwmaState(window, threshold, min(max(3, window//3), 12))
+        snapshots = [_kernel_snapshot(canonical_rule, source_metric, labels, point,
+                                      state.update(point.value), quality_states[index], window + 1, level_shift=True)
+                     for index, point in enumerate(points)]
     else:
         snapshots = []
         for index, point in enumerate(points):
@@ -561,6 +632,21 @@ def score_points(rule: RuleConfig, source_metric: str, labels: dict[str, str], r
     return _apply_decision_policy(canonical_rule, snapshots)
 
 
+def _harmonic_snapshot(rule, source_metric, labels, point, scored, quality):
+    return _kernel_snapshot(rule, source_metric, labels, point, scored, quality, 9)
+
+
+def _kernel_snapshot(rule, source_metric, labels, point, scored, quality, sample_count, *, level_shift=False):
+    if scored is None:
+        return _empty_snapshot(rule, source_metric, labels, point)
+    expected, spread, _, window_score = scored
+    # Confidence needs a trained sample count, not a copy of the model history.
+    return _snapshot(rule, source_metric, labels, [point], 0, [],
+                     expected, spread, data_quality_label=quality, window_score_override=window_score,
+                     sample_count_override=sample_count, level_shift_score_driver=level_shift,
+                     level_shift_point_multiplier=.85 if level_shift else 1.)
+
+
 def _score_level_shift(
     rule: RuleConfig,
     source_metric: str,
@@ -600,7 +686,8 @@ def _score_level_shift(
         recent_count = index - recent_start + 1
         recent_center = recent_sum / recent_count
         persistence_ratio = persistent_buckets / recent_count
-        window_raw_score = (abs(recent_center - expected) / spread) * (1 + max(0.0, persistence_ratio - 0.4))
+        window_raw_score = _supported_window_score(point.value, recent_center, expected, spread,
+                                                 1 + max(0.0, persistence_ratio - 0.4))
         raw_score = max(point_raw_score * 0.85, window_raw_score)
         normalized_score, severity_label, is_anomaly = _severity_state(raw_score, rule.threshold, rule.severity_preset)
         data_quality_label = quality_states[index]
@@ -643,52 +730,6 @@ def _score_level_shift(
     return snapshots
 
 
-def _score_ewma(
-    rule: RuleConfig,
-    source_metric: str,
-    labels: dict[str, str],
-    points: list[RawPoint],
-    quality_states: list[str],
-) -> list[SeriesSnapshot]:
-    snapshots: list[SeriesSnapshot] = []
-    alpha = 2 / (max(rule.baseline_window, 2) + 1)
-    smoothed: float | None = None
-    residual_history: list[float] = []
-
-    for index, point in enumerate(points):
-        if index == 0 or smoothed is None:
-            smoothed = point.value
-            snapshots.append(_empty_snapshot(rule, source_metric, labels, point))
-            continue
-
-        expected = smoothed
-        recent_values = [entry.value for entry in points[max(0, index - rule.baseline_window) : index]]
-        residual_slice = residual_history[-rule.baseline_window :]
-        residual_median = median(residual_slice) if residual_slice else 0.0
-        spread = _safe_spread(residual_median or _stddev(recent_values), expected)
-        residual_history.append(abs(point.value - expected))
-        smoothed = alpha * point.value + (1 - alpha) * expected
-        if len(recent_values) < warmup_history_points(rule.baseline_window):
-            snapshots.append(_empty_snapshot(rule, source_metric, labels, point))
-            continue
-        snapshots.append(
-            _snapshot(
-                rule,
-                source_metric,
-                labels,
-                points,
-                index,
-                recent_values,
-                expected,
-                spread,
-                data_quality_label=quality_states[index],
-                include_window_score=True,
-            )
-        )
-
-    return snapshots
-
-
 def _score_seasonal(
     rule: RuleConfig,
     source_metric: str,
@@ -707,6 +748,8 @@ def _score_seasonal(
             while cursor >= 0 and len(peers) < rule.baseline_window:
                 peers.append(points[cursor].value)
                 cursor -= rule.seasonality_samples
+            # Calendar peers are chronological too; delta trend must point forward.
+            peers.reverse()
         else:
             bucket_keys = _seasonal_bucket_keys(point.time)
             peers = (

@@ -550,6 +550,7 @@ const SETUP_MODE_LABELS: Record<SetupMode, string> = {
 };
 
 const ALGORITHM_LABELS: Record<DetectionAlgorithm, string> = {
+  harmonic: 'Harmonic (known cycle)',
   zscore: 'Rolling z-score',
   mad: 'Rolling MAD',
   ewma: 'EWMA baseline',
@@ -2312,7 +2313,9 @@ const resolveOptions = (options: SimpleOptions, metricNames: string[]): Resolved
       dataQualityGate: options.dataQualityGate !== false,
       sensitivity: Math.max(0.2, options.sensitivity ?? 4.0),
       baselineWindow: Math.max(3, Math.round(options.baselineWindow ?? 12)),
-      seasonalitySamples: Math.max(2, Math.round(options.seasonalitySamples ?? 24)),
+      seasonalitySamples: options.algorithm === 'harmonic'
+        ? Math.min(4096, Math.max(8, Math.round(options.seasonalitySamples ?? 24)))
+        : Math.max(2, Math.round(options.seasonalitySamples ?? 24)),
       seasonalRefinement: options.seasonalRefinement ?? 'cycle',
       severityPreset: options.severityPreset ?? 'balanced',
       bucketSpan,
@@ -2404,7 +2407,7 @@ const getDriverLabel = (scoreDriver: 'point' | 'window', algorithm: DetectionAlg
     return scoreDriver === 'window' ? 'Sustained baseline shift' : 'Fresh step change';
   }
 
-  if (algorithm === 'seasonal') {
+  if (algorithm === 'seasonal' || algorithm === 'harmonic') {
     return 'Seasonal pattern break';
   }
 
@@ -3240,7 +3243,9 @@ const buildHowItWorksText = (options: ResolvedOptions, effectiveBucketSpanMs: nu
       ? 'Custom profile is active.'
       : `${METRIC_PRESET_LABELS[options.effectiveMetricPreset]} profile is active.`;
   const algorithmText =
-    options.algorithm === 'level_shift'
+    options.algorithm === 'harmonic'
+      ? `It uses a known cycle of ${options.seasonalitySamples} scored samples, with correlated-noise correction and ${2 * options.seasonalitySamples} samples of warm-up. History window controls quality diagnostics, not harmonic memory. Saved Recommended profiles are unchanged.`
+      : options.algorithm === 'level_shift'
       ? `It focuses on sustained baseline shifts over the last ${options.baselineWindow} buckets.`
       : options.algorithm === 'seasonal'
         ? `It compares each point with similar historical positions using ${SEASONAL_REFINEMENT_LABELS[options.seasonalRefinement].toLowerCase()} refinement and ${options.seasonalitySamples} seasonal samples.`
@@ -4551,14 +4556,16 @@ const buildPanelScoreFeedRegistrationPayload = (
   const bucketSpanSeconds = bucketSpanToSeconds(resolvedOptions.bucketSpan);
   const contextStepSeconds = Math.max(0, Math.round(context.stepSeconds ?? 0));
   const stepSeconds = contextStepSeconds > 0 ? contextStepSeconds : bucketSpanSeconds > 0 ? Math.max(5, Math.min(bucketSpanSeconds, 60)) : 30;
-  const historyPoints = Math.max(256, resolvedOptions.baselineWindow * Math.max(resolvedOptions.seasonalitySamples, 1) + 8, resolvedOptions.baselineWindow * 6);
+  const historyPoints = resolvedOptions.algorithm === 'harmonic'
+    ? Math.max(256, 2 * resolvedOptions.seasonalitySamples + 128, resolvedOptions.baselineWindow + 1)
+    : Math.max(256, resolvedOptions.baselineWindow * Math.max(resolvedOptions.seasonalitySamples, 1) + 8, resolvedOptions.baselineWindow * 6);
   const panelRangeSeconds = Math.max(0, Math.round(context.rangeSeconds ?? 0));
   const fallbackRangeSeconds = Math.max(3600, historyPoints * stepSeconds);
 
   return {
     schemaVersion: 3,
-    pluginVersion: '1.5.0',
-    capabilitiesRequired: ['idempotentSync', 'scopeIdentity', 'directionPolicy', 'decisionLifecycle'],
+    pluginVersion: '1.5.1',
+    capabilitiesRequired: ['idempotentSync', 'scopeIdentity', 'directionPolicy', 'decisionLifecycle', ...(resolvedOptions.algorithm === 'harmonic' ? ['harmonicScoring'] : []), ...(resolvedOptions.algorithm === 'ewma' ? ['guardedEwmaScoring'] : []), ...(resolvedOptions.algorithm === 'level_shift' ? ['guardedLevelShiftScoring'] : []), ...(resolvedOptions.algorithm === 'seasonal' && resolvedOptions.seasonalRefinement === 'cycle' ? ['guardedSeasonalScoring'] : []), ...(['zscore', 'mad'].includes(resolvedOptions.algorithm) ? ['guardedRollingScoring'] : [])],
     dashboardUid: context.dashboardUid,
     folderTitle: context.folderTitle,
     dashboardTitle: context.dashboardTitle,
@@ -5732,13 +5739,14 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
   const selectedRawScoreLabel = selectionDetail ? formatValue(selectionDetail.score) : 'n/a';
   const selectedAlarmScoreLabel = selectionDetail ? `${SEVERITY_LABELS[selectionDetail.severityLabel]} ${selectionDetail.severityScore}` : 'n/a';
   const selectedConfidenceLabel = selectionDetail ? CONFIDENCE_LABELS[selectionDetail.confidenceLabel] : 'n/a';
-  const selectedConfidenceScore = selectionDetail ? formatScoreValue(selectionDetail.confidenceScore) : 'n/a';
+  const selectedConfidenceScore = selectionDetail ? `${formatScoreValue(selectionDetail.confidenceScore)}%` : 'n/a';
   const selectedDataQualityLabel = selectionDetail
     ? selectionDetail.dataQualityLabel === 'healthy'
       ? 'Good'
       : DATA_QUALITY_LABELS[selectionDetail.dataQualityLabel].replace(' data', '')
     : 'n/a';
-  const selectedDataQualityScore = selectionDetail ? formatScoreValue(selectionDetail.confidenceScore) : 'n/a';
+  // Quality is categorical, not a second copy of the confidence percentage.
+  const selectedDataQualityCaption = selectionDetail ? DATA_QUALITY_LABELS[selectionDetail.dataQualityLabel] : 'Not evaluated';
   const headerDatasourceLabel = liveTargets[0]?.datasourceType
     ? liveTargets[0].datasourceType.charAt(0).toUpperCase() + liveTargets[0].datasourceType.slice(1)
     : SCORE_FEED_TARGET_LABELS[normalizeScoreFeedTarget(options.scoreFeedTarget)];
@@ -5928,7 +5936,7 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
                   {selectedConfidenceLabel}
                 </span>
                 <span className={styles.inspectorRowValue} style={{ marginLeft: 10 }}>
-                  {selectedConfidenceScore}%
+                  {selectedConfidenceScore}
                 </span>
               </span>
             </div>
@@ -5939,7 +5947,7 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
                   {selectedDataQualityLabel}
                 </span>
                 <span className={styles.inspectorRowValue} style={{ marginLeft: 10 }}>
-                  {selectedDataQualityScore}%
+                  {selectedDataQualityCaption}
                 </span>
               </span>
             </div>
@@ -6141,7 +6149,7 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
               </div>
               <div className={styles.statCard}>
                 <div className={styles.statLabel}>Confidence</div>
-                <div className={styles.statValue}>{selectedConfidenceScore}%</div>
+                <div className={styles.statValue}>{selectedConfidenceScore}</div>
                 <div className={styles.statCaption}>{selectedConfidenceLabel}</div>
               </div>
               <div className={styles.statCard} role="status" aria-live="polite" aria-atomic="true">
@@ -6154,7 +6162,7 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
                 <div className={styles.statValue} style={{ color: '#4ADE80' }}>
                   {selectedDataQualityLabel}
                 </div>
-                <div className={styles.statCaption}>{selectedDataQualityScore}%</div>
+                <div className={styles.statCaption}>{selectedDataQualityCaption}</div>
               </div>
               </div> : null}
             </div>
@@ -6807,10 +6815,13 @@ export const SimplePanel: React.FC<Props> = ({ id, options, data, width, height,
                           <circle cx={x} cy={28} r={10.5} fill="none" stroke={theme.isDark ? '#E2E8F0' : '#0F172A'} strokeOpacity={0.4} strokeWidth={1.3} />
                         ) : null}
                         {index === 0 ? (
-                          <text x={x} y={50} textAnchor="start" fill={theme.isDark ? '#94A3B8' : '#64748B'} fontSize="10" fontWeight="700">
+                          <text x={x} y={50} textAnchor={x > 250 ? 'end' : 'start'} fill={theme.isDark ? '#94A3B8' : '#64748B'} fontSize="10" fontWeight="700">
                             {formatTimeAxisLabel(item.time, timeRangeMs, 'compact', timeZone)}
                           </text>
-                        ) : index === orderedSummaryItems.length - 1 ? (
+                        ) : index === orderedSummaryItems.length - 1
+                          && Math.abs(item.time - orderedSummaryItems[0].time) / Math.max(maxTime - minTime, 1) * 284 >= 64
+                          && formatTimeAxisLabel(item.time, timeRangeMs, 'compact', timeZone)
+                            !== formatTimeAxisLabel(orderedSummaryItems[0].time, timeRangeMs, 'compact', timeZone) ? (
                           <text x={x} y={50} textAnchor="end" fill={theme.isDark ? '#94A3B8' : '#64748B'} fontSize="10" fontWeight="700">
                             {formatTimeAxisLabel(item.time, timeRangeMs, 'compact', timeZone)}
                           </text>

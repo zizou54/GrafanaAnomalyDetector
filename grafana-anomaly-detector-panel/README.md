@@ -6,9 +6,10 @@ This package is the UI and scoring layer of the project. It detects anomalies di
 
 The public source folder uses a neutral repository name, while the plugin ID remains `alpas-anomalydetector-panel` for compatibility with installed environments.
 
-Current application version: **1.5.0**. Current package revision: **1.5.0-r1**.
-Download `grafana-anomaly-detector-plugin-1.5.0-r1.zip` from the
-[release page](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.0-r1).
+Application version: **1.5.1**, paired with exporter **1.5.1**.
+The strict six-model gate passes three consecutive Linux runs; final UI 21/21, backend 79/79 and TS/Python parity 48,201 points. See the repository release gate for field calibration, real delivery and target-host capacity limits.
+Download `grafana-anomaly-detector-plugin-1.5.1.zip` from the
+[release page](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.1).
 The ZIP contains the unchanged `alpas-anomalydetector-panel/` installation directory
 and `BUILD_INFO.json` for source-commit and content-hash traceability.
 

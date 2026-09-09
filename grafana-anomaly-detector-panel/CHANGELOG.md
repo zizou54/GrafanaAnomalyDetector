@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.1 (2026-09-09)
+
+- Prevent overlapping timeline labels and unavailable percentages. Display data quality categorically instead of duplicating confidence. Final browser suite after display fixes: 21/21 passing. Linux strict gate: three consecutive passes; field-only acceptance remains required.
+
+- Align guarded seasonal cycle scoring (period >=8) and level-shift reference/window scoring with the exporter. Preserve short-cycle/calendar behavior and require matching scoring capabilities on registration. Production threshold backtesting remains required.
+
+- Align guarded EWMA scoring with the exporter, damp stale trend during guarded events, and require the `guardedEwmaScoring` capability. This changes EWMA score behavior; deploy matched plugin/exporter builds and revalidate existing thresholds before production rollout.
+
+- Add opt-in Harmonic (known cycle) for matched exporter 1.5.1, with an explicit period and two-cycle warm-up. Existing algorithm selections are unchanged; this is not blanket production qualification.
+- Align guarded rolling z-score/MAD scoring with the exporter, including persistent-event reference protection and correlation-aware window evidence. Require `guardedRollingScoring` capability before registration; existing selections stay unchanged but their score behavior is revised.
+
+- Correct chronological ordering of seasonal-cycle trend peers, identically in panel and exporter.
+- Stop historical window evidence from opening anomalies on recovered or opposite-direction current points; preserve explicit recovery policy.
+- Validate scoring parity and independent holdouts. The six-model strict quality/performance gate passes three consecutive Linux runs with both scenarios enforced; earlier speed failures remain in historical evidence. No zero-false-positive or unconditional field-acceptance claim.
+- Match exporter 1.5.1 and provide version-matched packages, sample configurations and rebuilt E2E documentation.
+
 ## 1.5.0-r1 (2026-09-04; package revision)
 
 - Keep application version 1.5.0 while giving both ZIPs versioned names and build manifests.

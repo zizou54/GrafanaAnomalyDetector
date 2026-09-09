@@ -13,7 +13,7 @@ SEVERITY_THRESHOLDS: dict[str, SeverityThresholds] = {
     'page_first': {'low': 45, 'medium': 65, 'high': 82, 'critical': 95},
 }
 
-SUPPORTED_ALGORITHMS = {'zscore', 'mad', 'ewma', 'seasonal', 'level_shift'}
+SUPPORTED_ALGORITHMS = {'zscore', 'mad', 'ewma', 'seasonal', 'level_shift', 'harmonic'}
 SUPPORTED_ANOMALY_DIRECTIONS = {'high_mean', 'low_mean', 'high_or_low'}
 SUPPORTED_SEASONAL_REFINEMENTS = {'cycle', 'hour_of_day', 'weekday_hour'}
 SUPPORTED_SEVERITY_PRESETS = set(SEVERITY_THRESHOLDS.keys())
@@ -82,6 +82,8 @@ class RuleConfig:
     description: str = ''
 
     def __post_init__(self) -> None:
+        if self.algorithm == 'harmonic' and not 8 <= self.seasonality_samples <= 4096:
+            raise ValueError('Harmonic seasonality_samples must be between 8 and 4096.')
         normalized = self.anomaly_direction.strip().lower() if isinstance(self.anomaly_direction, str) else ''
         if normalized not in SUPPORTED_ANOMALY_DIRECTIONS:
             if self.anomaly_direction is not None:
@@ -93,6 +95,8 @@ class RuleConfig:
 
     @property
     def history_limit(self) -> int:
+        if self.algorithm == 'harmonic':
+            return max(256, 2 * self.seasonality_samples + 128, self.baseline_window + 1)
         seasonal_depth = self.baseline_window * max(self.seasonality_samples, 1)
         return max(256, seasonal_depth + 8, self.baseline_window * 6)
 
@@ -141,6 +145,12 @@ class SeriesState:
     incident_open: bool = False
     recovery_count: int = 0
     cooldown_remaining: int = 0
+    last_snapshot: SeriesSnapshot | None = None
+    harmonic_state: Any = None
+    rolling_state: Any = None
+    guarded_ewma_state: Any = None
+    guarded_seasonal_state: Any = None
+    guarded_level_state: Any = None
 
     @classmethod
     def create(cls, history_limit: int, seasonal_window: int) -> 'SeriesState':

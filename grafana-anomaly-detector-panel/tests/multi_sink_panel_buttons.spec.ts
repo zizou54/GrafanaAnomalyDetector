@@ -78,7 +78,8 @@ async function visiblePanel(page: Page, title: string): Promise<Locator> {
   await expect(panel).toBeVisible({ timeout: 60000 });
   await expect(panel.getByText(title, { exact: true }).first()).toBeVisible({ timeout: 60000 });
   await expect(panel.getByRole('heading', { name: 'Anomaly Detector' })).toBeVisible({ timeout: 60000 });
-  await expect(panel.getByRole('status')).toBeVisible({ timeout: 60000 });
+  // Grafana's loading bar also has role=status during background refresh.
+  await expect(panel.locator('[role="status"][aria-live="polite"]')).toBeVisible({ timeout: 60000 });
   return panel;
 }
 
@@ -169,14 +170,18 @@ async function syncAndOpenRules(panel: Locator, expected: PanelExpectation, hasI
     .poll(async () => panel.page().evaluate(() => navigator.clipboard.readText()), { timeout: 30000 })
     .toBe(alertBuilderUrl.searchParams.get('query'));
   await alertBuilder.close();
+  await panel.page().bringToFront();
 
   await expect(inspector.getByRole('button', { name: 'Copy rule labels' })).toBeEnabled();
   await inspector.getByRole('button', { name: 'Copy rule labels' }).click();
-  await expect(panel.getByText('Copied suggested alert labels.')).toBeVisible({ timeout: 30000 });
+  // Assert the durable outcome, not the 3.2-second toast on a busy dashboard.
+  await expect.poll(() => panel.page().evaluate(() => navigator.clipboard.readText()),
+    { timeout: 30000 }).toContain('alert_family=anomaly_detector');
 
   await expect(inspector.getByRole('button', { name: 'Copy alert query' })).toBeEnabled();
   await inspector.getByRole('button', { name: 'Copy alert query' }).click();
-  await expect(panel.getByText('Copied the alert query for Grafana Alerting.')).toBeVisible({ timeout: 30000 });
+  await expect.poll(() => panel.page().evaluate(() => navigator.clipboard.readText()),
+    { timeout: 30000 }).toBe(alertBuilderUrl.searchParams.get('query'));
 }
 
 async function verifyAutomationHandoffDefault(panel: Locator, expected: PanelExpectation) {

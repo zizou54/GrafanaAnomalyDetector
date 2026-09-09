@@ -17,14 +17,12 @@ async function gotoSoloPanel(page: Page, path: string, title: string) {
 }
 
 async function gotoSoloPanelOrSkip(page: Page, path: string, title: string) {
+  const uid = path.split('/')[2];
+  const response = await page.request.get(`/api/dashboards/uid/${uid}`);
+  test.skip(response.status() === 404, `Dashboard ${uid} is not provisioned in the current stack.`);
+  expect(response.ok(), `Dashboard ${uid} must be readable`).toBe(true);
   await page.goto(path, { waitUntil: 'domcontentloaded' });
-  const titleLocator = page.getByText(title, { exact: true }).first();
-  const visible = await titleLocator
-    .waitFor({ state: 'visible', timeout: 10000 })
-    .then(() => true)
-    .catch(() => false);
-
-  test.skip(!visible, `Dashboard "${title}" is not provisioned in the current stack.`);
+  await expect(page.getByRole('heading', { name: title, exact: true }).first()).toBeVisible({ timeout: 60000 });
 }
 
 async function selectFirstAnomaly(page: Page) {
@@ -57,8 +55,24 @@ async function expectVisiblePageText(page: Page, fragment: string) {
     .toContain(fragment);
 }
 
-test('renders the provisioned TestData panel and exposes point-level analysis details', async ({ page }) => {
-  await gotoSoloPanelOrSkip(page, dashboardPaths.testData, 'Synthetic anomaly stream');
+test('renders the provisioned TestData panel and exposes point-level analysis details', async ({ page }, testInfo) => {
+  // This fixture contains a single spike, not three repeated breaches. Keep the
+  // product defaults unchanged and explicitly exercise point-level inspection.
+  await page.route((url) => url.pathname === '/api/dashboards/uid/anomaly-detector-demo'
+    || url.pathname.endsWith('/dashboards/anomaly-detector-demo/dto'), async (route) => {
+    const response = await route.fetch();
+    if (!response.ok()) {
+      await route.fulfill({ response });
+      return;
+    }
+    const payload = await response.json();
+    for (const panel of (payload.dashboard ?? payload.spec).panels) {
+      panel.options = { ...panel.options, scoreFeedMode: 'off', persistenceBuckets: 1,
+        persistenceWindow: 1, recoveryBuckets: 1, cooldownBuckets: 0 };
+    }
+    await route.fulfill({ response, json: payload });
+  });
+  await gotoSoloPanelOrSkip(page, dashboardPaths.testData, 'Anomaly Detector');
 
   await expect(page.getByText('Detected incidents', { exact: true }).first()).toBeVisible({ timeout: 60000 });
   await expect(page.getByText('Anomaly inspector', { exact: true })).toBeVisible();
@@ -66,11 +80,17 @@ test('renders the provisioned TestData panel and exposes point-level analysis de
 
   await selectFirstAnomaly(page);
 
-  await expect(page.getByText('Current value', { exact: true })).toBeVisible();
-  await expect(page.getByText('Expected value', { exact: true })).toBeVisible();
-  await expect(page.getByText('Change %', { exact: true })).toBeVisible();
-  await expect(page.getByText('Confidence', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Copy annotation JSON' })).toBeVisible();
+  const inspector = page.getByRole('complementary', { name: 'Anomaly inspector', exact: true });
+  for (const label of ['Value', 'Expected', 'Deviation', 'Confidence', 'Raw detection score']) {
+    await expect(inspector.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(inspector.getByText('415', { exact: true })).toBeVisible();
+  await expect(inspector.getByText('249.25', { exact: true })).toBeVisible();
+  await expect(inspector.getByText('Healthy data', { exact: true })).toBeVisible();
+  await expect(page.getByText('n/a%', { exact: true })).toHaveCount(0);
+  await expect(inspector.getByRole('button', { name: 'Copy rule labels' })).toBeEnabled();
+  await expect(page.getByRole('img', { name: 'Incident timeline overview', exact: true }).locator('text')).toHaveCount(1);
+  await page.screenshot({ path: testInfo.outputPath('testdata-inspector.png'), fullPage: true });
 });
 
 test('uses deterministic incidents to test Prometheus panel actions with live score-feed registration', async ({ page, context }) => {

@@ -31,6 +31,9 @@ LOGGER = logging.getLogger('grafana_anomaly_exporter')
 MIN_OVERDUE_SLEEP_SECONDS = 0.05
 API_SCHEMA_VERSION = 3
 API_FEATURES = (
+    'guardedEwmaScoring',
+    'guardedSeasonalScoring',
+    'guardedLevelShiftScoring',
     'basePathAliases',
     'idempotentSync',
     'scopeIdentity',
@@ -39,6 +42,8 @@ API_FEATURES = (
     'structuredErrors',
     'directionPolicy',
     'decisionLifecycle',
+    'harmonicScoring',
+    'guardedRollingScoring',
     'ruleLifecycle',
     'requestLimits',
 )
@@ -90,6 +95,10 @@ class ExporterRuntime:
         self.query_success: dict[str, int] = {}
         self.last_evaluation_timestamp = 0.0
         self.last_evaluation_duration_seconds = 0.0
+        self.last_source_duration_seconds = 0.0
+        self.last_scoring_duration_seconds = 0.0
+        self.last_input_points = 0
+        self.last_input_series = 0
         self.sink_manager = SinkManager([])
         self.sink_config_signature = ''
         self.pushed_feeds: dict[str, tuple[list[SeriesSnapshot], list[RuleSnapshot], float]] = {}
@@ -144,9 +153,18 @@ class ExporterRuntime:
         with self.lock:
             previous_states = self.rule_states
             previous_query_success = self.query_success
+            previous_config = self.current_config
+            previous_rules = {rule.name: rule for rule in previous_config.rules} if previous_config is not None else {}
+            source_unchanged = previous_config is not None and previous_config.global_config.prometheus_url == config.global_config.prometheus_url
+            reusable_names = {
+                rule.name for rule in config.rules
+                if previous_rules.get(rule.name) == rule
+                and (source_unchanged or rule.source_type != 'prometheus' or bool(rule.datasource_url))
+            }
             self.current_config = config
-            self.rule_states = {rule.name: previous_states.get(rule.name, {}) for rule in config.rules}
-            self.query_success = {rule.name: previous_query_success.get(rule.name, 0) for rule in config.rules}
+            # A same-name edit is not the same statistical population/lifecycle.
+            self.rule_states = {rule.name: previous_states.get(rule.name, {}) if rule.name in reusable_names else {} for rule in config.rules}
+            self.query_success = {rule.name: previous_query_success.get(rule.name, 0) if rule.name in reusable_names else 0 for rule in config.rules}
             self.last_config_mtime = config_mtime
             self.last_error = ''
         LOGGER.info('config loaded rules=%s sinks=%s dynamic_rules=%s', len(config.rules), len(config.sinks), len(self.dynamic_registry.records))
@@ -324,7 +342,7 @@ class ExporterRuntime:
                 query_success=merged_success,
                 config=self.current_config,
                 duration=self.last_evaluation_duration_seconds,
-                evaluation_time=max(self.last_evaluation_timestamp, rule_timestamp),
+                evaluation_time=self.last_evaluation_timestamp,
                 last_error=self.last_error,
                 success=1 if not self.last_error else 0,
             )
@@ -425,7 +443,11 @@ class ExporterRuntime:
             self.pushed_feeds.pop(key, None)
 
     def _merged_series_snapshots_locked(self) -> list[SeriesSnapshot]:
-        return list(self.series_snapshots) + self._pushed_series_snapshots_locked()
+        closed_rule_names = {snapshot.name for snapshot in self.rule_snapshots}
+        return list(self.series_snapshots) + [
+            snapshot for snapshot in self._pushed_series_snapshots_locked()
+            if snapshot.rule_name not in closed_rule_names
+        ]
 
     def _merged_rule_snapshots_locked(self) -> list[RuleSnapshot]:
         merged = list(self.rule_snapshots)
@@ -439,10 +461,12 @@ class ExporterRuntime:
         return merged
 
     def _merged_query_success_locked(self, query_success: dict[str, int]) -> dict[str, int]:
+        self._prune_pushed_feeds_locked()
         merged = dict(query_success)
         for _, rule_snapshots, _ in self.pushed_feeds.values():
             for snapshot in rule_snapshots:
-                merged[snapshot.name] = 1
+                # A browser preview must not hide an authoritative source error.
+                merged.setdefault(snapshot.name, 1)
         return merged
 
     def list_dynamic_rules(self) -> list[dict[str, object]]:
@@ -501,7 +525,7 @@ class ExporterRuntime:
         if config is None:
             raise RuntimeError('Config could not be loaded.')
 
-        start = time.time()
+        start = time.monotonic()
         evaluation_time = time.time()
         client = PrometheusClient(
             base_url=config.global_config.prometheus_url,
@@ -535,8 +559,13 @@ class ExporterRuntime:
                 return [], [], str(exc)
 
         worker_count = min(4, max(1, len(config.rules)))
+        source_started = time.monotonic()
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix='anomaly-source') as executor:
             query_results = list(executor.map(query_rule, config.rules))
+        source_duration = time.monotonic() - source_started
+        scoring_started = time.monotonic()
+        input_points = 0
+        input_series = 0
 
         for rule, (samples, matrix, query_error) in zip(config.rules, query_results):
             next_query_success[rule.name] = 0 if query_error else 1
@@ -544,6 +573,8 @@ class ExporterRuntime:
                 errors.append(query_error)
 
             rule_scores: list[SeriesSnapshot] = []
+            input_series += len(matrix) + len(samples)
+            input_points += sum(len(series.samples) for series in matrix) + len(samples)
             rule_state = self.rule_states.setdefault(rule.name, {})
             for series in matrix:
                 raw_identifier = series.labels.get('__name__', rule.name)
@@ -586,7 +617,8 @@ class ExporterRuntime:
             if rule.target_sinks != []:
                 sink_batches.append((rule.target_sinks, list(rule_scores), [rule_snapshot]))
 
-        duration = time.time() - start
+        scoring_duration = time.monotonic() - scoring_started
+        duration = time.monotonic() - start
         last_error = ' | '.join(errors[:3])
 
         with self.lock:
@@ -595,6 +627,10 @@ class ExporterRuntime:
             self.query_success = next_query_success
             self.last_evaluation_timestamp = evaluation_time
             self.last_evaluation_duration_seconds = duration
+            self.last_source_duration_seconds = source_duration
+            self.last_scoring_duration_seconds = scoring_duration
+            self.last_input_points = input_points
+            self.last_input_series = input_series
             self.last_error = last_error
             self.metrics_payload = self._render_metrics(
                 series_snapshots=self._merged_series_snapshots_locked(),
@@ -705,6 +741,18 @@ class ExporterRuntime:
             '# HELP grafana_anomaly_evaluation_duration_seconds Duration of the last evaluation cycle.',
             '# TYPE grafana_anomaly_evaluation_duration_seconds gauge',
             f'grafana_anomaly_evaluation_duration_seconds {duration:.6f}',
+            '# HELP grafana_anomaly_source_query_duration_seconds Last completed parallel source query phase wall duration.',
+            '# TYPE grafana_anomaly_source_query_duration_seconds gauge',
+            f'grafana_anomaly_source_query_duration_seconds {self.last_source_duration_seconds:.6f}',
+            '# HELP grafana_anomaly_scoring_duration_seconds Last completed scoring phase wall duration including aggregation and rule snapshots, excluding sink writes.',
+            '# TYPE grafana_anomaly_scoring_duration_seconds gauge',
+            f'grafana_anomaly_scoring_duration_seconds {self.last_scoring_duration_seconds:.6f}',
+            '# HELP grafana_anomaly_evaluation_input_points Source samples processed in the last completed evaluation, before bucketing.',
+            '# TYPE grafana_anomaly_evaluation_input_points gauge',
+            f'grafana_anomaly_evaluation_input_points {self.last_input_points}',
+            '# HELP grafana_anomaly_evaluation_input_series Source series processed in the last completed evaluation.',
+            '# TYPE grafana_anomaly_evaluation_input_series gauge',
+            f'grafana_anomaly_evaluation_input_series {self.last_input_series}',
             '# HELP grafana_anomaly_last_evaluation_timestamp_seconds Unix timestamp of the last evaluation.',
             '# TYPE grafana_anomaly_last_evaluation_timestamp_seconds gauge',
             f'grafana_anomaly_last_evaluation_timestamp_seconds {evaluation_time:.3f}',

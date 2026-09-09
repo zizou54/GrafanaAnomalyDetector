@@ -1,6 +1,6 @@
 export type SetupMode = 'recommended' | 'advanced';
 export type DetectionMode = 'single' | 'multi';
-export type DetectionAlgorithm = 'zscore' | 'mad' | 'ewma' | 'seasonal' | 'level_shift';
+export type DetectionAlgorithm = 'zscore' | 'mad' | 'ewma' | 'seasonal' | 'level_shift' | 'harmonic';
 export type AnomalyDirection = 'high_mean' | 'low_mean' | 'high_or_low';
 
 export function resolveAnomalyDirection(value: unknown): { direction: AnomalyDirection; warning: string | null } {

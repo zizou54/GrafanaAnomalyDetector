@@ -438,6 +438,19 @@ describe('SimplePanel helpers', () => {
     expect(buildGrafanaErrorMessage({}, 'fallback')).toBe('fallback');
   });
 
+  it('requires Harmonic capability and uses the same fallback history as exporter', () => {
+    const registration = buildPanelScoreFeedRegistrationPayload({
+      source: 'saved', dashboardUid: 'harmonic-test', panelTitle: 'Known cycle', panelOptions: {}, stepSeconds: 60,
+      targets: [{ refId: 'A', expr: 'metric', datasourceType: 'prometheus', datasourceUrl: 'http://localhost:9090' }],
+    } as any, 7, 'harmonic', 'prometheus', {
+      setupMode: 'advanced', metricPreset: 'custom', effectiveMetricPreset: 'custom', detectionMode: 'single',
+      algorithm: 'harmonic', sensitivity: 4, baselineWindow: 12, seasonalitySamples: 96,
+      seasonalRefinement: 'cycle', severityPreset: 'balanced', bucketSpan: 'raw',
+    } as any, 'hash');
+    expect(registration?.capabilitiesRequired).toContain('harmonicScoring');
+    expect(registration?.resolvedOptions).toMatchObject({ algorithm: 'harmonic', seasonalitySamples: 96, rangeSeconds: 19200 });
+  });
+
   it('reuses saved scope unless a runtime variable changes the query identity', () => {
     const saved = [
       {

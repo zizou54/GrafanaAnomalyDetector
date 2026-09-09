@@ -567,7 +567,7 @@ rules:
         self.assertNotIn('confidence_label=', metrics)
         self.assertNotIn('data_quality=', metrics)
         self.assertNotIn('score_driver=', metrics)
-        self.assertIn('grafana_anomaly_build_info{version="1.5.0"} 1', metrics)
+        self.assertIn('grafana_anomaly_build_info{version="1.5.1"} 1', metrics)
         self.assertIn('source_metric="Server api-1 - Login Rate"', metrics)
         self.assertIn('grafana_anomaly_sink_up{sink="loki"} 1', metrics)
         self.assertTrue(any(path == '/loki/api/v1/push' for path, _, _ in CaptureHandler.requests))

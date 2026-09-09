@@ -5,6 +5,12 @@ from dataclasses import replace
 from datetime import datetime
 from statistics import median
 
+from .canonical import _confidence_state, _data_quality_state_from_arrays, _supported_window_score, _window_score, _harmonic_snapshot, build_raw_point
+from .harmonic import HarmonicState
+from .guarded_rolling import GuardedRollingState
+from .guarded_ewma import GuardedEwmaState
+from .guarded_seasonal import GuardedSeasonalState
+from .canonical import _kernel_snapshot
 from .models import (
     MIN_BASELINE_POINTS,
     MIN_SEASONAL_SAMPLES,
@@ -46,52 +52,6 @@ def _safe_spread(spread: float, reference: float) -> float:
 
 def _bound_raw_score(score: float) -> float:
     return max(0.0, min(MAX_RAW_SCORE, score)) if math.isfinite(score) else 0.0
-
-
-def _window_score(history_values: list[float], current_value: float, expected: float, spread: float, baseline_window: int) -> float:
-    context_window = min(max(3, baseline_window // 3), 10)
-    recent = history_values[-(context_window - 1):] + [current_value]
-    if len(recent) < 3:
-        return 0.0
-    return abs(_mean(recent) - expected) / spread
-
-
-def _data_quality_state(history_values: list[float], baseline_window: int) -> str:
-    recent = history_values[-max(4, min(baseline_window, 8)) :]
-    if len(history_values) < max(MIN_BASELINE_POINTS, baseline_window // 2):
-        return 'thin'
-    if len(recent) >= 4:
-        floor = max(abs(_mean(recent)) * 0.002, 1e-6)
-        if max(recent) - min(recent) <= floor:
-            return 'flatline'
-    return 'healthy'
-
-
-def _confidence_state(
-    raw_score: float,
-    threshold: float,
-    point_raw_score: float,
-    window_raw_score: float,
-    sample_count: int,
-    data_quality_label: str,
-) -> tuple[float, str]:
-    safe_threshold = max(threshold, 1e-6)
-    ratio = min(raw_score / safe_threshold, 2.5)
-    score = ratio / 2.5 * 100
-    if window_raw_score > point_raw_score:
-        score += 8
-    if sample_count >= 8:
-        score += 4
-    if data_quality_label == 'thin':
-        score -= 18
-    elif data_quality_label == 'flatline':
-        score -= 22
-    confidence_score = max(5.0, min(100.0, round(score, 1)))
-    if confidence_score >= 80:
-        return confidence_score, 'high'
-    if confidence_score >= 55:
-        return confidence_score, 'medium'
-    return confidence_score, 'low'
 
 
 def _severity_state(
@@ -226,9 +186,9 @@ def _snapshot(
     spread: float,
     timestamp: float,
     *,
+    data_quality_label: str,
     include_window_score: bool = False,
 ) -> SeriesSnapshot:
-    data_quality_label = _data_quality_state(history_values, rule.baseline_window)
     point_raw_score = abs(value - expected) / spread
     window_raw_score = _window_score(history_values, value, expected, spread, rule.baseline_window) if include_window_score else 0.0
     raw_score = max(point_raw_score, window_raw_score)
@@ -239,7 +199,7 @@ def _snapshot(
         rule.severity_preset,
         point_raw_score=point_raw_score,
         window_raw_score=window_raw_score,
-        sample_count=len(history_values) + 1,
+        sample_count=min(len(history_values), rule.baseline_window) + 1,
         data_quality_label=data_quality_label,
     )
     return SeriesSnapshot(
@@ -276,8 +236,8 @@ def _snapshot_level_shift(
     history_values: list[float],
     value: float,
     timestamp: float,
+    data_quality_label: str,
 ) -> SeriesSnapshot:
-    data_quality_label = _data_quality_state(history_values, rule.baseline_window)
     shift_window = min(max(3, rule.baseline_window // 3), 12)
     recent_window = max(1, shift_window - 1)
     lookback_window = max(rule.baseline_window * 6, rule.baseline_window + shift_window)
@@ -303,7 +263,8 @@ def _snapshot_level_shift(
     recent_count = len(recent_values) + 1
     recent_center = recent_sum / recent_count
     persistence_ratio = persistent_buckets / recent_count
-    window_raw_score = abs(recent_center - expected) / spread * (1.0 + max(0.0, persistence_ratio - 0.4))
+    window_raw_score = _supported_window_score(value, recent_center, expected, spread,
+                                             1.0 + max(0.0, persistence_ratio - 0.4))
     raw_score = max(point_raw_score * 0.85, window_raw_score)
     score_driver = 'window' if window_raw_score >= point_raw_score * 0.85 else 'point'
     severity = _severity_state(
@@ -408,65 +369,47 @@ def _apply_decision_policy(rule: RuleConfig, state: SeriesState, snapshot: Serie
 
 
 def evaluate_series(state: SeriesState, rule: RuleConfig, source_metric: str, labels: dict[str, str], value: float, timestamp: float) -> SeriesSnapshot:
+    # Re-polling a source sample must not advance the baseline or N-of-M policy.
+    # Late/corrected history belongs on the range-replay path, not in this stream.
+    if state.last_snapshot is not None and timestamp <= state.last_snapshot.timestamp:
+        return state.last_snapshot
     history_values = [entry.value for entry in state.history]
+    quality_values = history_values[-rule.baseline_window:] + [value]
+    quality_times = [entry.timestamp for entry in list(state.history)[-rule.baseline_window:]] + [timestamp]
+    data_quality_label = _data_quality_state_from_arrays(
+        quality_values, quality_times, len(quality_values) - 1, rule.baseline_window,
+    )
     minimum_history = warmup_history_points(rule.baseline_window)
 
-    if rule.algorithm == 'zscore':
-        history_slice = history_values[-rule.baseline_window:]
-        if len(history_slice) < minimum_history:
-            result = _empty_snapshot(rule, source_metric, labels, value, timestamp)
-        else:
-            expected = _mean(history_slice)
-            spread = _safe_spread(_stddev(history_slice, expected), expected)
-            result = _snapshot(rule, source_metric, labels, history_values, value, expected, spread, timestamp)
-
-    elif rule.algorithm == 'mad':
-        history_slice = history_values[-rule.baseline_window:]
-        if len(history_slice) < minimum_history:
-            result = _empty_snapshot(rule, source_metric, labels, value, timestamp)
-        else:
-            expected = median(history_slice)
-            mad = median([abs(entry - expected) for entry in history_slice]) * 1.4826
-            spread = _safe_spread(mad, expected)
-            result = _snapshot(rule, source_metric, labels, history_values, value, expected, spread, timestamp)
+    if rule.algorithm == 'harmonic':
+        if state.harmonic_state is None:
+            state.harmonic_state = HarmonicState(rule.seasonality_samples, rule.threshold)
+        result = _harmonic_snapshot(rule, source_metric, labels, build_raw_point(timestamp, value),
+                                    state.harmonic_state.update(value), data_quality_label)
+    elif rule.algorithm in ('zscore', 'mad'):
+        if state.rolling_state is None:
+            state.rolling_state = GuardedRollingState(rule.algorithm, rule.baseline_window, rule.threshold)
+        result = _kernel_snapshot(rule, source_metric, labels, build_raw_point(timestamp, value),
+                                  state.rolling_state.update(value), data_quality_label, rule.baseline_window + 1)
 
     elif rule.algorithm == 'ewma':
-        if state.ewma_baseline is None:
-            state.ewma_baseline = value
-            result = _empty_snapshot(rule, source_metric, labels, value, timestamp)
-        else:
-            expected = state.ewma_baseline
-            residual_slice = list(state.residuals)[-rule.baseline_window:]
-            if residual_slice:
-                spread = _safe_spread(median(residual_slice), expected)
-            else:
-                spread = _safe_spread(_stddev(history_values[-rule.baseline_window:]), expected)
-            state.residuals.append(abs(value - expected))
-            alpha = 2 / (max(rule.baseline_window, 2) + 1)
-            state.ewma_baseline = alpha * value + (1 - alpha) * expected
-            if len(history_values) < minimum_history:
-                result = _empty_snapshot(rule, source_metric, labels, value, timestamp)
-            else:
-                result = _snapshot(
-                    rule,
-                    source_metric,
-                    labels,
-                    history_values,
-                    value,
-                    expected,
-                    spread,
-                    timestamp,
-                    include_window_score=True,
-                )
+        if state.guarded_ewma_state is None:
+            state.guarded_ewma_state = GuardedEwmaState(rule.baseline_window, rule.threshold)
+        result = _kernel_snapshot(rule, source_metric, labels, build_raw_point(timestamp, value),
+                                  state.guarded_ewma_state.update(value), data_quality_label, rule.baseline_window + 1)
 
+    elif rule.algorithm == 'seasonal' and rule.seasonal_refinement == 'cycle' and rule.seasonality_samples >= 8:
+        if state.guarded_seasonal_state is None:
+            state.guarded_seasonal_state = GuardedSeasonalState(rule.seasonality_samples, rule.baseline_window, rule.threshold)
+        result = _kernel_snapshot(rule, source_metric, labels, build_raw_point(timestamp, value),
+                                  state.guarded_seasonal_state.update(value), data_quality_label, rule.baseline_window + 1)
     elif rule.algorithm == 'level_shift':
-        shift_window = min(max(3, rule.baseline_window // 3), 12)
-        lookback_window = max(rule.baseline_window * 6, rule.baseline_window + shift_window)
-        history_slice = history_values[-lookback_window:]
-        if len(history_slice) < max(minimum_history, MIN_BASELINE_POINTS * 2, shift_window + MIN_BASELINE_POINTS):
-            result = _empty_snapshot(rule, source_metric, labels, value, timestamp)
-        else:
-            result = _snapshot_level_shift(rule, source_metric, labels, history_values, value, timestamp)
+        if state.guarded_level_state is None:
+            state.guarded_level_state = GuardedEwmaState(rule.baseline_window, rule.threshold,
+                                                        min(max(3, rule.baseline_window//3), 12))
+        result = _kernel_snapshot(rule, source_metric, labels, build_raw_point(timestamp, value),
+                                  state.guarded_level_state.update(value), data_quality_label,
+                                  rule.baseline_window + 1, level_shift=True)
 
     else:
         if rule.seasonal_refinement == 'cycle':
@@ -475,6 +418,7 @@ def evaluate_series(state: SeriesState, rule: RuleConfig, source_metric: str, la
             while cursor >= 0 and len(peers) < rule.baseline_window:
                 peers.append(history_values[cursor])
                 cursor -= rule.seasonality_samples
+            peers.reverse()
         else:
             bucket_keys = _seasonal_bucket_keys(timestamp)
             bucket_key = bucket_keys[rule.seasonal_refinement]
@@ -487,7 +431,8 @@ def evaluate_series(state: SeriesState, rule: RuleConfig, source_metric: str, la
         else:
             recent_history = history_values[-rule.baseline_window:]
             expected, spread = _seasonal_expected_and_spread(peers, recent_history)
-            result = _snapshot(rule, source_metric, labels, history_values, value, expected, spread, timestamp)
+            result = _snapshot(rule, source_metric, labels, history_values, value, expected, spread, timestamp,
+                               data_quality_label=data_quality_label)
 
         bucket_keys = _seasonal_bucket_keys(timestamp)
         state.seasonal_history[bucket_keys['hour_of_day']].append(value)
@@ -497,6 +442,7 @@ def evaluate_series(state: SeriesState, rule: RuleConfig, source_metric: str, la
     state.history.append(SampleHistoryEntry(timestamp=timestamp, value=value))
     if rule.algorithm != 'ewma' and state.ewma_baseline is None:
         state.ewma_baseline = value
+    state.last_snapshot = result
     return result
 
 

@@ -40,7 +40,7 @@ def archive(path, files, metadata):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--revision', default='1.5.0-r1')
+    parser.add_argument('--revision', required=True)
     args = parser.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+(?:-r\d+)?', args.revision):
         parser.error('Invalid package revision')
@@ -50,9 +50,24 @@ def main():
     plugin = json.loads((panel / 'dist/plugin.json').read_text())
     assert plugin['info']['version'] == version == args.revision.split('-r')[0]
     assert f"__version__ = '{version}'" in (exporter / 'app/__init__.py').read_text()
+    document_names = [f'PACKAGE_CONTENTS_v{version}_TR.md',
+                      f'GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v{version}_TR.md']
+    release = ROOT / 'release'
+    for name in document_names:
+        if not (release / name).is_file():
+            parser.error(f'Missing version-matched release document: {name}')
+    source_paths = ['grafana-anomaly-detector-panel', 'prometheus-live-demo/anomaly_exporter',
+                    'scripts/build_release.py', 'docs/ANOMALYALARM_PROXY_TR.md',
+                    *['release/' + name for name in document_names]]
+    if version == '1.5.1':
+        source_paths += ['release/screenshots/v1.5.1', 'release/STATUS_v1.5.1.md',
+                         'docs/HARMONIC_151_USAGE_TR.md', 'docs/e2e-guide-v1.5.1-tr.pdf']
+    dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all',
+                                     '--', *source_paths], cwd=ROOT, text=True)
+    if dirty.strip():
+        parser.error('Commit reviewed package inputs before building; sourceCommit must identify exact source.')
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     metadata = {'packageRevision': args.revision, 'applicationVersion': version, 'sourceCommit': commit}
-    release = ROOT / 'release'
 
     def normalized(path):
         data = path.read_bytes()
@@ -79,11 +94,22 @@ def main():
             files[prefix + p.name] = normalized(p)
     files[prefix + 'exporter/state/dynamic_rules.json'] = b'{"rules": []}\n'
     for source, destination in [
-        ('PACKAGE_CONTENTS_v1.5.0_TR.md', 'README_TR.md'),
-        ('GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md',
+        (document_names[0], 'README_TR.md'),
+        (document_names[1],
          'GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_TR.md')]:
         files[prefix + destination] = normalized(release / source)
     files[prefix + 'ANOMALYALARM_PROXY_TR.md'] = normalized(ROOT / 'docs/ANOMALYALARM_PROXY_TR.md')
+    if version == '1.5.1':
+        # Keep the offline guide self-contained while retaining repository links in GitHub Markdown.
+        guide = normalized(release / document_names[1]).replace(b'(../docs/', b'(docs/')
+        files[prefix + 'GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_TR.md'] = guide
+        files[prefix + document_names[1]] = guide
+        files[prefix + 'STATUS_v1.5.1.md'] = normalized(release / 'STATUS_v1.5.1.md')
+        files[prefix + 'release/STATUS_v1.5.1.md'] = normalized(release / 'STATUS_v1.5.1.md')
+        for name in ['ANOMALYALARM_PROXY_TR.md', 'HARMONIC_151_USAGE_TR.md', 'e2e-guide-v1.5.1-tr.pdf']:
+            files[prefix + 'docs/' + name] = normalized(ROOT / 'docs' / name)
+        for p in sorted((release / 'screenshots/v1.5.1').glob('*.png')):
+            files[prefix + 'screenshots/v1.5.1/' + p.name] = p.read_bytes()
     archive(release / f'grafana-anomaly-exporter-bundle-{args.revision}.zip', files, metadata)
     packages = [release / f'grafana-anomaly-detector-plugin-{args.revision}.zip',
                 release / f'grafana-anomaly-exporter-bundle-{args.revision}.zip']

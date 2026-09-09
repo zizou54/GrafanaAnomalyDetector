@@ -188,6 +188,11 @@ const bucketSpans: Array<{ label: string; value: BucketSpan; description: string
 
 const algorithms: Array<{ label: string; value: DetectionAlgorithm; description: string }> = [
   {
+    label: 'Harmonic (known cycle)',
+    value: 'harmonic',
+    description: 'Opt-in correlated-noise model. Requires a known period of 8-4096 scored samples and two full cycles of warm-up.',
+  },
+  {
     label: 'Rolling z-score',
     value: 'zscore',
     description: 'Fast default for spikes and dips in streaming metrics.',
@@ -504,7 +509,7 @@ export const plugin = new PanelPlugin<SimpleOptions>(SimplePanel).setPanelOption
       path: 'baselineWindow',
       name: 'History & warm-up window',
       description:
-        'Baseline bucket count. Detection waits for this history at the start of a selected range, reducing premature false positives; larger values are steadier but react more slowly.',
+        'Baseline bucket count for rolling models. For Harmonic, this controls quality diagnostics only; its warm-up is two full cycles set by Season length.',
       defaultValue: 12,
       category: advancedCategory,
       showIf: (config) => config.setupMode === 'advanced' || config.metricPreset === 'custom',
@@ -512,10 +517,10 @@ export const plugin = new PanelPlugin<SimpleOptions>(SimplePanel).setPanelOption
     .addNumberInput({
       path: 'seasonalitySamples',
       name: 'Season length (samples)',
-      description: 'Used by cycle-based seasonal mode. Example: 24 for an hourly pattern or 288 for a daily pattern in 5-minute data.',
+      description: 'Samples per cycle AFTER bucketing. Example: 288 for a daily pattern in 5-minute data. Harmonic requires 8-4096 and two full cycles of warm-up.',
       defaultValue: 24,
       category: advancedCategory,
-      showIf: (config) => (config.setupMode === 'advanced' || config.metricPreset === 'custom') && config.algorithm === 'seasonal',
+      showIf: (config) => (config.setupMode === 'advanced' || config.metricPreset === 'custom') && (config.algorithm === 'seasonal' || config.algorithm === 'harmonic'),
     })
     .addSelect({
       path: 'seasonalRefinement',

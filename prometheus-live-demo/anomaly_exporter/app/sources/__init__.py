@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from ..models import GlobalConfig, RuleConfig
 from .base import BaseSourceReader, SourceQueryError
@@ -31,7 +32,7 @@ def build_source_reader(rule: RuleConfig, global_config: GlobalConfig) -> BaseSo
     source_type = normalize_source_type(rule.source_type)
     if not rule.datasource_url:
         env_key = f'ANOMALY_SOURCE_{source_type.upper()}_URL'
-        rule.datasource_url = os.environ.get(env_key, '')
+        rule = replace(rule, datasource_url=os.environ.get(env_key, ''))
     if source_type == 'prometheus':
         return PrometheusSourceReader(rule, global_config.request_timeout_seconds, global_config.prometheus_url)
     if source_type == 'loki':

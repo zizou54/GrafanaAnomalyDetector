@@ -1,12 +1,14 @@
 # Grafana Anomaly Detector
 
-Plugin version: **1.5.0**. Package revision: **1.5.0-r1**. Plugin ID: `alpas-anomalydetector-panel`.
+Plugin version: **1.5.1**, paired with exporter **1.5.1**. Plugin ID: `alpas-anomalydetector-panel`.
 
-Analyze numeric time-series with z-score, rolling MAD, EWMA, seasonal, or level-shift detection. Inspect expected bands, severity, confidence, data quality, and incident details.
+The strict synthetic six-model quality and 10k CPU-throughput gate passed three consecutive Linux runs. Field calibration and target-host capacity validation remain required.
+
+Analyze numeric time-series with z-score, rolling MAD, EWMA, seasonal, level-shift or opt-in Harmonic detection. Inspect expected bands, severity, confidence, categorical data quality, and incident details.
 
 ## Install
 
-1. Download `grafana-anomaly-detector-plugin-1.5.0-r1.zip` from the [v1.5.0-r1 release](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.0-r1) and verify its checksum.
+1. Download `grafana-anomaly-detector-plugin-1.5.1.zip` from the [v1.5.1 release](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.1) and verify its checksum.
 2. Extract the ZIP into `<grafana-plugins>/`; it already contains the `alpas-anomalydetector-panel/` directory. Avoid nesting that directory twice.
 3. This build is unsigned. Add `allow_loading_unsigned_plugins = alpas-anomalydetector-panel` under `[plugins]` in the active Grafana configuration.
 4. Restart Grafana, refresh the browser, and choose Anomaly Detector as the panel visualization.
@@ -19,17 +21,17 @@ Use Recommended mode for metric-aware defaults, or Advanced mode to choose the a
 
 ## Continuous score feed
 
-The optional exporter is version 1.5.0 and requires Python 3.9 or later. Choose one target, save the dashboard, and sync the query/settings to the exporter. Registered sources can then be recomputed without keeping the panel open. The exporter needs source credentials, network access, and durable state.
+The optional exporter is version 1.5.1 and requires Python 3.9 or later. Choose one target, save the dashboard, and sync the query/settings to the exporter. Registered sources can then be recomputed without keeping the panel open. The exporter needs source credentials, network access, and durable state.
 
 Targets are Prometheus metrics, Loki, InfluxDB, PostgreSQL, ClickHouse, and Elasticsearch. Prometheus is not required for a non-Prometheus source/target flow. Copy the target-specific query into Grafana Alerting and configure routing and No Data/Error behavior; opening the builder does not save a rule automatically.
 
 ## Documentation and limitations
 
-- [Current installation and upgrade guide](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md)
-- [Verified release scope and remaining work](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/release/STATUS_v1.5.0.md)
+- [Current installation and upgrade guide](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md)
+- [Verified release scope and remaining work](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/release/STATUS_v1.5.1.md)
 
 The chart uses custom SVG. Native Time Series multi-axis, zoom/pan and shared-cursor parity is not complete.
 
 BUILD_INFO.json identifies the source commit and hashes for this package revision.
-Strict synthetic quality and capacity qualification remain open; see the
+Field-data calibration and target-host capacity qualification remain required; see the
 [r1 test record](https://github.com/alpaslancetin/grafana-anomaly-detector/blob/main/docs/RELEASE_1_5_0_R1_VERIFICATION.md).

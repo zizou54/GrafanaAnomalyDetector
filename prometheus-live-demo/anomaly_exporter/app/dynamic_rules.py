@@ -25,7 +25,7 @@ from .models import (
 DATACLASS_KWARGS = {'slots': True} if sys.version_info >= (3, 10) else {}
 STATE_SCHEMA_VERSION = 3
 SUPPORTED_SCOPE_POLICIES = {'saved', 'pinned', 'runtime'}
-SUPPORTED_API_CAPABILITIES = {'idempotentSync', 'scopeIdentity', 'directionPolicy', 'decisionLifecycle'}
+SUPPORTED_API_CAPABILITIES = {'idempotentSync', 'scopeIdentity', 'directionPolicy', 'decisionLifecycle', 'harmonicScoring', 'guardedRollingScoring', 'guardedEwmaScoring', 'guardedSeasonalScoring', 'guardedLevelShiftScoring'}
 
 
 def _state_bool(value: object, default: bool = False) -> bool:
@@ -546,7 +546,8 @@ class DynamicRuleRegistry:
                 os.fsync(handle.fileno())
             if self.state_path.exists():
                 shutil.copy2(self.state_path, self.backup_path)
-                with self.backup_path.open('rb') as backup:
+                # Windows _commit (fsync) requires a writable descriptor.
+                with self.backup_path.open('r+b' if os.name == 'nt' else 'rb') as backup:
                     os.fsync(backup.fileno())
             os.replace(temp_path, self.state_path)
             self._fsync_parent_directory()
@@ -675,6 +676,8 @@ class DynamicRuleRegistry:
             raise RegistrationError('baselineWindow must be positive.')
         if seasonality_samples <= 0:
             raise RegistrationError('seasonalitySamples must be positive.')
+        if algorithm == 'harmonic' and not 8 <= seasonality_samples <= 4096:
+            raise RegistrationError('Harmonic seasonalitySamples must be between 8 and 4096 scored samples.')
         if seasonal_refinement not in SUPPORTED_SEASONAL_REFINEMENTS:
             raise RegistrationError(f'seasonalRefinement must be one of: {sorted(SUPPORTED_SEASONAL_REFINEMENTS)}')
         if severity_preset not in SUPPORTED_SEVERITY_PRESETS:

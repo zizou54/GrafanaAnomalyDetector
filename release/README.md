@@ -1,23 +1,24 @@
-# Release packages
+# Release packages: 1.5.1
 
-This folder contains package revision `1.5.0-r1` of plugin/exporter `1.5.0`. Both ZIP names are versioned. Original packages and checksums remain on the [v1.5.0 release](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.0); do not use their checksums with r1 packages.
+Current application/package version: **1.5.1**, API schema **3**. Earlier tags, notes and ZIPs remain unchanged as historical records. Use the matched 1.5.1 files below; do not mix versions or checksums.
 
 ## Artifacts
 
-- `grafana-anomaly-detector-plugin-1.5.0-r1.zip`: Grafana panel plugin.
-- `grafana-anomaly-exporter-bundle-1.5.0-r1.zip`: portable and RHEL exporter bundle.
-- `GITHUB_RELEASE_NOTES_v1.5.0.md`: GitHub release description.
-- `GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md`: end-to-end Turkish guide.
-- `PACKAGE_CONTENTS_v1.5.0_TR.md`: package contents and operational notes.
-- `SHA256SUMS_v1.5.0-r1.txt`: release integrity checksums.
-- [STATUS_v1.5.0.md](STATUS_v1.5.0.md): verified coverage, chart limitations, and remaining production qualification.
+- `grafana-anomaly-detector-plugin-1.5.1.zip`: Grafana panel plugin.
+- `grafana-anomaly-exporter-bundle-1.5.1.zip`: portable and RHEL exporter bundle.
+- [Release notes](GITHUB_RELEASE_NOTES_v1.5.1.md)
+- [New E2E guide](GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md)
+- [Illustrated PDF](../docs/e2e-guide-v1.5.1-tr.pdf)
+- [Package inventory](PACKAGE_CONTENTS_v1.5.1_TR.md)
+- `SHA256SUMS_v1.5.1.txt`: release integrity checksums.
+- [Release gate and field limits](STATUS_v1.5.1.md)
 
-This is a code/package revision, not just documentation. The original v1.5.0 tag and assets are not replaced. The v1.5.0-r1 release points to the revised source and packages. Each ZIP contains `BUILD_INFO.json` with the source commit and per-file SHA-256 values. Rebuild using `python scripts/build_release.py` after the production plugin build; do not include runtime state or local QA output.
+Each ZIP contains `BUILD_INFO.json` with the source commit and per-file hashes. Maintainers must commit reviewed inputs, build the production plugin, run `python scripts/build_release.py --revision 1.5.1`, then `python scripts/check_release_packages.py --revision 1.5.1 --python /path/to/python3.9`. Commit generated assets separately; the release tag includes artifacts while the manifest identifies their source commit. Never include runtime state or secrets.
 
 ## Compatibility
 
 - Grafana: `11.6.7` or later.
-- Live validated Grafana versions: `11.6.7`, `12.4.0`.
+- Latest 1.5.1 UI gate: Grafana `12.4.0`; earlier release testing also covered `11.6.7`.
 - Exporter Python: `3.9` or later.
 
 ## Exporter first start
@@ -30,12 +31,15 @@ The exporter zip now contains a ready-to-run `exporter/config.yml` plus two edit
 Prometheus source:
 
 ```bash
-unzip grafana-anomaly-exporter-bundle-1.5.0-r1.zip
+unzip grafana-anomaly-exporter-bundle-1.5.1.zip
 cd grafana-anomaly-exporter-bundle
 cp exporter/examples/config.prometheus.yml exporter/config.yml
 vi exporter/config.yml
-ANOMALY_PYTHON_BIN=$(command -v python3.9) ./portable-exporter.sh validate
-ANOMALY_PYTHON_BIN=$(command -v python3.9) ./portable-exporter.sh start http://127.0.0.1:9090
+python3.9 -m venv .venv
+.venv/bin/python -m pip install -r exporter/requirements.txt
+export ANOMALY_PYTHON_BIN="$PWD/.venv/bin/python"
+./portable-exporter.sh validate
+./portable-exporter.sh start http://127.0.0.1:8090
 ```
 
 InfluxDB 2.x source and sink:
@@ -57,7 +61,7 @@ The exporter API uses schema `3`. It supports lifecycle-aware decisions, explici
 ## Validation
 
 ```bash
-sha256sum -c SHA256SUMS_v1.5.0-r1.txt
+sha256sum -c SHA256SUMS_v1.5.1.txt
 curl -fsS http://127.0.0.1:9110/health
 curl -fsS http://127.0.0.1:9110/health/ready
 curl -fsS http://127.0.0.1:9110/health/dependencies

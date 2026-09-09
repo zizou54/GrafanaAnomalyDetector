@@ -11,26 +11,28 @@
 <p align="center">
   <img alt="Grafana compatibility" src="https://img.shields.io/badge/Grafana-11.6.7%2B-F46800?style=for-the-badge&logo=grafana&logoColor=white">
   <img alt="Validated versions" src="https://img.shields.io/badge/Validated-11.6.7%20%7C%2012.4.0-0F172A?style=for-the-badge">
-  <img alt="Plugin version" src="https://img.shields.io/badge/Plugin-v1.5.0-2563EB?style=for-the-badge">
+  <img alt="Plugin version" src="https://img.shields.io/badge/Plugin-v1.5.1-2563EB?style=for-the-badge">
   <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-16A34A?style=for-the-badge">
 </p>
 
 ---
 
-## Current release: v1.5.0-r1
+## Current release: v1.5.1
 
-Plugin **1.5.0**, exporter **1.5.0**, API schema **3**; package revision **1.5.0-r1**. Download the matched packages from the [v1.5.0-r1 release](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.0-r1), then follow the [current installation and upgrade guide](release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md). This revision includes the post-release direction, API diagnostics and compact-chart fixes. Original v1.5.0 assets remain available unchanged in their historical release.
+Plugin and exporter are both **1.5.1**, API schema **3**. The six-model synthetic quality and 10k CPU-throughput gate passes three consecutive recorded Linux runs. Final UI: 21/21; backend: 79/79; Jest: 45/45; TS/Python parity: 48,201 points. Earlier Linux failures remain in the historical evidence; throughput is not a hardware-independent SLA. See the [release gate and deployment limits](release/STATUS_v1.5.1.md), [new E2E guide](release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md) and [illustrated PDF](docs/e2e-guide-v1.5.1-tr.pdf).
+
+Download the matched packages from the [v1.5.1 release](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.1). This release adds opt-in Harmonic and revises the guarded rolling, EWMA, seasonal and level-shift references. Existing scores can change: upgrade both components together and revalidate thresholds. Earlier tags and assets remain unchanged.
 
 Both ZIPs have versioned filenames and a `BUILD_INFO.json` content manifest. Exporter includes `config.yml`, `examples/config.prometheus.yml`, and `examples/config.influxdb.yml`; edit endpoints and provide credentials before starting. For browser access without exposing port 9110, see the [same-origin /anomalyalarm proxy guide](docs/ANOMALYALARM_PROXY_TR.md).
 
-See [release scope and remaining work](release/STATUS_v1.5.0.md) for verified coverage and limitations. The plugin is unsigned; full native Grafana Time Series chart parity is not claimed.
+The plugin is unsigned; full native Grafana Time Series chart parity and perfect anomaly detection on arbitrary data are not claimed. Real notification delivery, target-host soak and field calibration remain deployment acceptance tasks.
 
 ## ✨ Why this project stands out
 
 - **Panel-native anomaly detection**: analyze time-series directly where operators already work.
 - **Readable anomaly context**: expected value, deviation, confidence, data quality, and main reason are surfaced in the UI.
 - **Alert-ready score feed**: publish plugin-computed scores to Prometheus metrics or a selected datasource sink.
-- **Multiple scoring models**: `zscore`, `mad`, `ewma`, `seasonal`, and `level_shift`.
+- **Multiple scoring models**: `zscore`, `mad`, `ewma`, `seasonal`, `level_shift`, and opt-in `harmonic`.
 - **Test-backed compatibility**: validated with live responsive and score-feed flows on Grafana `11.6.7` and `12.4.0`.
 
 ## 🧭 At a glance
@@ -44,7 +46,7 @@ See [release scope and remaining work](release/STATUS_v1.5.0.md) for verified co
 
 ## 🖼️ Product view
 
-These screenshots illustrate the product workflow; they are not a pixel-by-pixel acceptance baseline for v1.5.0. Refer to the current guide and release scope for supported controls.
+These older illustrations show the workflow, not an exact 1.5.1 acceptance baseline. Fresh light-theme 1.5.1 screenshots are embedded in the current E2E guide.
 
 <table>
   <tr>
@@ -113,7 +115,7 @@ If you only want the panel plugin, you do not need the exporter bundle.
 
 **Release package**
 
-- [`release/grafana-anomaly-detector-plugin-1.5.0-r1.zip`](release/grafana-anomaly-detector-plugin-1.5.0-r1.zip)
+- [`release/grafana-anomaly-detector-plugin-1.5.1.zip`](release/grafana-anomaly-detector-plugin-1.5.1.zip)
 
 **Typical Grafana install flow**
 
@@ -159,7 +161,7 @@ The exporter registers saved panel queries, recomputes their anomaly scores inde
 
 **Release package**
 
-- [`release/grafana-anomaly-exporter-bundle-1.5.0-r1.zip`](release/grafana-anomaly-exporter-bundle-1.5.0-r1.zip)
+- [`release/grafana-anomaly-exporter-bundle-1.5.1.zip`](release/grafana-anomaly-exporter-bundle-1.5.1.zip)
 
 **Installation notes**
 
@@ -210,7 +212,7 @@ Expected proof line:
 
 ## 🔁 Multi-datasource anomaly feed
 
-Exporter `v1.5.0` keeps the existing Prometheus exposition path and can also write canonical anomaly score snapshots to additional backends. The source datasource and target sink are independent: for example, a PostgreSQL-backed source can produce anomaly scores and write those score records to Elasticsearch.
+Exporter `v1.5.1` keeps the existing Prometheus exposition path and can also write canonical anomaly score snapshots to additional backends. The source datasource and target sink are independent: for example, a PostgreSQL-backed source can produce anomaly scores and write those score records to Elasticsearch.
 
 Supported sources:
 
@@ -387,14 +389,14 @@ docker compose up -d --build
 
 Main outputs under [`release/`](release):
 
-- `grafana-anomaly-detector-plugin-1.5.0-r1.zip`
-- `grafana-anomaly-exporter-bundle-1.5.0-r1.zip`
+- `grafana-anomaly-detector-plugin-1.5.1.zip`
+- `grafana-anomaly-exporter-bundle-1.5.1.zip`
 
 Release package notes:
 
 - [`release/README.md`](release/README.md)
-- [`release/GITHUB_RELEASE_NOTES_v1.5.0.md`](release/GITHUB_RELEASE_NOTES_v1.5.0.md)
-- [`release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md`](release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md)
+- [`release/GITHUB_RELEASE_NOTES_v1.5.1.md`](release/GITHUB_RELEASE_NOTES_v1.5.1.md)
+- [`release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md`](release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md)
 
 ## 🛠️ Typical alerting path
 

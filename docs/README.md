@@ -1,10 +1,21 @@
 # Documentation
 
-Current versions: plugin **1.5.0**, exporter **1.5.0**, API schema **3**; package revision **1.5.0-r1**.
+Current versions: plugin/exporter **1.5.1**, API schema **3**.
 
-## Start here
+## Start here: 1.5.1
 
-- [Current v1.5.0 installation, configuration and upgrade guide - TR](../release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md)
+- [New end-to-end installation, configuration and upgrade guide](../release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.1_TR.md)
+- [Release gate and limitations](../release/STATUS_v1.5.1.md)
+- [Detailed changes](../release/GITHUB_RELEASE_NOTES_v1.5.1.md)
+- [Harmonic configuration](HARMONIC_151_USAGE_TR.md)
+- [Illustrated 1.5.1 PDF](e2e-guide-v1.5.1-tr.pdf)
+- [Versioned downloads](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.1)
+
+The old PDF below is not a 1.5.1 manual. Use the versioned guide above.
+
+## Historical 1.5.0-r1 documentation
+
+- [v1.5.0 installation, configuration and upgrade guide - TR](../release/GRAFANA_ANOMALY_DETECTOR_E2E_KURULUM_UPGRADE_KILAVUZU_v1.5.0_TR.md)
 - [Matched packages and checksums](../release/README.md)
 - [Verified scope and remaining work](../release/STATUS_v1.5.0.md)
 - [GitHub v1.5.0-r1 downloads](https://github.com/alpaslancetin/grafana-anomaly-detector/releases/tag/v1.5.0-r1)

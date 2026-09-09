@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -132,12 +133,51 @@ def build_cases() -> list[dict[str, Any]]:
     ]
     for algorithm in ['zscore', 'mad', 'ewma', 'seasonal', 'level_shift']:
         cases.append({'name': f'{algorithm}_deterministic', 'points': deterministic_points(), 'options': {**base_options, 'algorithm': algorithm}})
+        for window in (3, 12, 30):
+            cases.append({
+                'name': f'{algorithm}_quality_lifecycle_window_{window}',
+                'points': [{'timestamp': 1710000000 + index * 60 + (3600 if index >= 300 else 0),
+                            'value': 100 + math.sin(index / 9) + (15 if index % 71 == 0 else 0)}
+                           for index in range(360)],
+                'options': {**base_options, 'algorithm': algorithm, 'sensitivity': 4.0,
+                            'baselineWindow': window, 'seasonalitySamples': 4,
+                            'dataQualityGate': True, 'persistenceBuckets': 3, 'persistenceWindow': 4,
+                            'recoveryThreshold': 3.0, 'recoveryBuckets': 2, 'cooldownBuckets': 2},
+            })
     for index, direction in enumerate(['both', 'upper', '', 'HIGH_MEAN', None]):
         for value in (160.0, 40.0):
             cases.append({
                 'name': f'mad_direction_normalization_{index}_{int(value)}',
                 'points': directional_shift_points(value),
                 'options': {**base_options, 'algorithm': 'mad', 'anomalyDirection': direction},
+            })
+    for period in (8, 17, 96, 144):
+        for direction in ('high_or_low', 'high_mean', 'low_mean'):
+            cases.append({
+                'name': f'harmonic_{period}_{direction}',
+                'points': [{'timestamp': 1710000000 + i * 60,
+                            'value': 100 + 4 * math.sin(i * math.tau / period) + math.sin(i * 7) * .8
+                                     + (14 if 600 <= i < 660 else -14 if 800 <= i < 850 else 0)}
+                           for i in range(1000)],
+                'options': {**base_options, 'algorithm': 'harmonic', 'seasonalitySamples': period,
+                            'sensitivity': 4, 'baselineWindow': 12, 'anomalyDirection': direction,
+                            'persistenceBuckets': 3, 'persistenceWindow': 4,
+                            'recoveryThreshold': 3, 'recoveryBuckets': 2, 'cooldownBuckets': 2},
+            })
+    rng = random.Random(514097)
+    rolling_values = [100 + 4 * math.sin(i * math.tau / 96) + rng.gauss(0, .8)
+                      + (20 if 700 <= i < 760 else -20 if 1100 <= i < 1160 else 0)
+                      for i in range(1800)]
+    for algorithm in ('zscore', 'mad', 'ewma', 'seasonal', 'level_shift'):
+        for direction in ('high_or_low', 'high_mean', 'low_mean'):
+            cases.append({
+                'name': f'guarded_{algorithm}_{direction}_long',
+                'points': [{'timestamp': 1710000000 + i * 60, 'value': value}
+                           for i, value in enumerate(rolling_values)],
+                'options': {**base_options, 'algorithm': algorithm, 'sensitivity': 4,
+                            'anomalyDirection': direction, 'persistenceBuckets': 3,
+                            'persistenceWindow': 4, 'recoveryThreshold': 3,
+                            'recoveryBuckets': 2, 'cooldownBuckets': 2},
             })
     return cases
 

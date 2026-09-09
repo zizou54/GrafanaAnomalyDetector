@@ -1,4 +1,8 @@
 import { AnomalyDirection, BucketSpan, DetectionAlgorithm, resolveAnomalyDirection, SeasonalRefinement, SeverityPreset } from './types';
+import { HarmonicState } from './harmonic';
+import { GuardedRollingState } from './guardedRolling';
+import { GuardedEwmaState } from './guardedEwma';
+import { GuardedSeasonalState } from './guardedSeasonal';
 
 export type SeverityLabel = 'normal' | 'low' | 'medium' | 'high' | 'critical';
 export type ConfidenceLabel = 'low' | 'medium' | 'high';
@@ -332,34 +336,22 @@ const getSeverityState = (score: number, threshold: number, severityPreset: Seve
   return { severityScore, severityLabel: 'low' };
 };
 
-const getWindowScore = (history: number[], currentValue: number, expected: number, spread: number, window: number): number => {
-  const contextWindow = Math.min(Math.max(3, Math.floor(window / 3)), 10);
-  const recent = [...history.slice(-(contextWindow - 1)), currentValue];
-  if (recent.length < 3) {
-    return 0;
-  }
-
-  return Math.abs(mean(recent) - expected) / spread;
-};
-
 const getDataQualityState = (points: RawPoint[], index: number, baselineWindow: number): DataQualityLabel => {
-  const history = points.slice(Math.max(0, index - baselineWindow), index + 1);
-  const values = history.map((entry) => entry.value);
-  const recent = history.slice(-Math.max(4, Math.min(baselineWindow, 8)));
+  const start = Math.max(0, index - baselineWindow);
+  const historyLength = index + 1 - start;
+  const recentStart = Math.max(start, index + 1 - Math.max(4, Math.min(baselineWindow, 8)));
+  const recent = points.slice(recentStart, index + 1);
 
-  if (values.length < Math.max(MIN_BASELINE_POINTS, Math.floor(baselineWindow / 2))) {
+  if (historyLength < Math.max(MIN_BASELINE_POINTS, Math.floor(baselineWindow / 2))) {
     return 'thin';
   }
 
   if (recent.length >= 3) {
     const diffs = recent.slice(1).map((point, offset) => point.time - recent[offset].time).filter((diff) => diff > 0);
-    const expectedStep = diffs.length > 0 ? median(diffs) : null;
     const smallestStep = diffs.length > 0 ? Math.min(...diffs) : null;
     const largestStep = diffs.length > 0 ? Math.max(...diffs) : null;
-    if (
-      (expectedStep && diffs.some((diff) => diff > expectedStep * 2.4)) ||
-      (smallestStep && largestStep && largestStep > smallestStep * 1.8)
-    ) {
+    // Since median >= min, this also covers the former max > 2.4*median test.
+    if (smallestStep && largestStep && largestStep > smallestStep * 1.8) {
       return 'gappy';
     }
   }
@@ -464,67 +456,21 @@ const buildZScorePoints = (points: RawPoint[], threshold: number, window: number
     };
   });
 
-const buildMadPoints = (points: RawPoint[], threshold: number, window: number, severityPreset: SeverityPreset): SamplePoint[] =>
-  points.map((point, index) => {
-    const history = points.slice(Math.max(0, index - window), index).map((entry) => entry.value);
-    if (history.length < getWarmupHistoryPoints(window)) {
-      return buildEmptyPoint(point, threshold, severityPreset);
-    }
-
-    const expected = median(history);
-    const deviationHistory = history.map((value) => Math.abs(value - expected));
-    const spread = safeSpread(median(deviationHistory) * 1.4826, expected);
-    const pointScore = Math.abs(point.value - expected) / spread;
-    const windowScore = 0;
-    const score = pointScore;
-    const severity = getSeverityState(score, threshold, severityPreset);
-    const confidence = getConfidenceState(score, threshold, pointScore, windowScore, history.length + 1, getDataQualityState(points, index, window));
-
-    return {
-      ...point,
-      expected,
-      lower: expected - threshold * spread,
-      upper: expected + threshold * spread,
-      score,
-      pointScore,
-      windowScore,
-      scoreDriver: windowScore > pointScore ? 'window' : 'point',
-      isAnomaly: score >= threshold,
-      decisionState: score >= threshold ? 'open' : 'normal',
-      ...severity,
-      ...confidence,
-    };
-  });
-
 const buildEwmaPoints = (points: RawPoint[], threshold: number, window: number, severityPreset: SeverityPreset): SamplePoint[] => {
   const results: SamplePoint[] = [];
-  const alpha = 2 / (Math.max(window, 2) + 1);
-  let smoothed: number | null = null;
-  const residualHistory: number[] = [];
+  const state = new GuardedEwmaState(window, threshold);
 
   points.forEach((point, index) => {
-    if (index === 0 || smoothed === null) {
-      smoothed = point.value;
+    const result = state.update(point.value);
+    if (result === null) {
       results.push(buildEmptyPoint(point, threshold, severityPreset));
       return;
     }
 
-    const expected = smoothed;
-    const spread = safeSpread(median(residualHistory.slice(-window)) || standardDeviation(points.slice(Math.max(0, index - window), index).map((entry) => entry.value)), expected);
-    const history = points.slice(Math.max(0, index - window), index).map((entry) => entry.value);
-    residualHistory.push(Math.abs(point.value - expected));
-    smoothed = alpha * point.value + (1 - alpha) * expected;
-
-    if (history.length < getWarmupHistoryPoints(window)) {
-      results.push(buildEmptyPoint(point, threshold, severityPreset));
-      return;
-    }
-
-    const pointScore = Math.abs(point.value - expected) / spread;
-    const windowScore = getWindowScore(history, point.value, expected, spread, window);
+    const { expected, spread, pointScore, windowScore } = result;
     const score = Math.max(pointScore, windowScore);
     const severity = getSeverityState(score, threshold, severityPreset);
-    const confidence = getConfidenceState(score, threshold, pointScore, windowScore, history.length + 1, getDataQualityState(points, index, window));
+    const confidence = getConfidenceState(score, threshold, pointScore, windowScore, window + 1, getDataQualityState(points, index, window));
     results.push({
       ...point,
       expected,
@@ -552,15 +498,27 @@ const buildSeasonalPoints = (
   refinement: SeasonalRefinement,
   severityPreset: SeverityPreset
 ): SamplePoint[] => {
+  const cycleState = refinement === 'cycle' && seasonalitySamples >= 8 ? new GuardedSeasonalState(seasonalitySamples, window, threshold) : null;
   const hourlyHistory = new Map<string, number[]>();
   const weekdayHistory = new Map<string, number[]>();
 
   return points.map((point, index) => {
     let peers: number[] = [];
-    if (refinement === 'cycle') {
+    if (cycleState) {
+      const result = cycleState!.update(point.value);
+      if (result === null) { return buildEmptyPoint(point, threshold, severityPreset); }
+      const { expected, spread, pointScore, windowScore } = result;
+      const score = Math.max(pointScore, windowScore);
+      return { ...point, expected, lower: expected - threshold * spread, upper: expected + threshold * spread,
+        score, pointScore, windowScore, scoreDriver: windowScore > pointScore ? 'window' : 'point',
+        isAnomaly: score >= threshold, decisionState: score >= threshold ? 'open' : 'normal',
+        ...getSeverityState(score, threshold, severityPreset),
+        ...getConfidenceState(score, threshold, pointScore, windowScore, window + 1, getDataQualityState(points, index, window)) };
+    } else if (refinement === 'cycle') {
       for (let cursor = index - seasonalitySamples; cursor >= 0 && peers.length < window; cursor -= seasonalitySamples) {
         peers.push(points[cursor].value);
       }
+      peers.reverse();
     } else {
       const bucketKeys = getSeasonalBucketKeys(point.time);
       peers =
@@ -610,54 +568,20 @@ const buildSeasonalPoints = (
   });
 };
 
-const selectLevelShiftReference = (values: number[], start: number, baselineEnd: number, window: number): number[] => {
-  const anchorEnd = Math.min(start + window, baselineEnd);
-  if (anchorEnd - start >= MIN_BASELINE_POINTS) {
-    return values.slice(start, anchorEnd);
-  }
-
-  return values.slice(Math.max(start, baselineEnd - window), baselineEnd);
-};
-
 const buildLevelShiftPoints = (points: RawPoint[], threshold: number, window: number, severityPreset: SeverityPreset): SamplePoint[] => {
-  const values = points.map((entry) => entry.value);
   const shiftWindow = Math.min(Math.max(3, Math.floor(window / 3)), 12);
-  const recentWindow = Math.max(1, shiftWindow - 1);
-  const lookbackWindow = Math.max(window * 6, window + shiftWindow);
-  const minHistory = Math.max(getWarmupHistoryPoints(window), MIN_BASELINE_POINTS * 2, shiftWindow + MIN_BASELINE_POINTS);
+  const state = new GuardedEwmaState(window, threshold, shiftWindow);
 
   return points.map((point, index) => {
-    const start = Math.max(0, index - lookbackWindow);
-    if (index - start < minHistory) {
+    const result = state.update(point.value);
+    if (result === null) {
       return buildEmptyPoint(point, threshold, severityPreset);
     }
 
-    const baselineEnd = index - recentWindow;
-    if (baselineEnd - start < MIN_BASELINE_POINTS) {
-      return buildEmptyPoint(point, threshold, severityPreset);
-    }
-
-    const referenceHistory = selectLevelShiftReference(values, start, baselineEnd, window);
-    const expected = mean(referenceHistory);
-    const spread = safeSpread(standardDeviation(referenceHistory, expected), expected);
-    const pointScore = Math.abs(point.value - expected) / spread;
-    const recentStart = Math.max(0, index - recentWindow);
-    let recentSum = point.value;
-    let persistentBuckets = Math.abs(point.value - expected) > spread ? 1 : 0;
-    for (let cursor = recentStart; cursor < index; cursor += 1) {
-      const recentValue = values[cursor];
-      recentSum += recentValue;
-      if (Math.abs(recentValue - expected) > spread) {
-        persistentBuckets += 1;
-      }
-    }
-    const recentCount = index - recentStart + 1;
-    const recentCenter = recentSum / recentCount;
-    const persistenceRatio = persistentBuckets / recentCount;
-    const windowScore = (Math.abs(recentCenter - expected) / spread) * (1 + Math.max(0, persistenceRatio - 0.4));
+    const { expected, spread, pointScore, windowScore } = result;
     const score = Math.max(pointScore * 0.85, windowScore);
     const severity = getSeverityState(score, threshold, severityPreset);
-    const confidence = getConfidenceState(score, threshold, pointScore, windowScore, referenceHistory.length + 1, getDataQualityState(points, index, window));
+    const confidence = getConfidenceState(score, threshold, pointScore, windowScore, window + 1, getDataQualityState(points, index, window));
 
     return {
       ...point,
@@ -683,9 +607,24 @@ export const analyzePoints = (points: RawPoint[], options: ScoringOptions): Samp
   let scoredPoints: SamplePoint[];
 
   switch (options.algorithm) {
+    case 'zscore':
     case 'mad':
-      scoredPoints = buildMadPoints(validPoints, threshold, window, options.severityPreset);
+    case 'harmonic': {
+      const state = options.algorithm === 'harmonic' ? new HarmonicState(options.seasonalitySamples, threshold)
+        : new GuardedRollingState(options.algorithm, window, threshold);
+      scoredPoints = validPoints.map((point, index) => {
+        const result = state.update(point.value);
+        if (result === null) { return buildEmptyPoint(point, threshold, options.severityPreset); }
+        const { expected, spread, pointScore, windowScore } = result;
+        const score = Math.max(pointScore, windowScore);
+        return { ...point, expected, lower: expected - threshold * spread, upper: expected + threshold * spread,
+          score, pointScore, windowScore, scoreDriver: windowScore > pointScore ? 'window' : 'point',
+          isAnomaly: score >= threshold, decisionState: score >= threshold ? 'open' : 'normal',
+          ...getSeverityState(score, threshold, options.severityPreset),
+          ...getConfidenceState(score, threshold, pointScore, windowScore, options.algorithm === 'harmonic' ? 9 : window + 1, getDataQualityState(validPoints, index, window)) };
+      });
       break;
+    }
     case 'ewma':
       scoredPoints = buildEwmaPoints(validPoints, threshold, window, options.severityPreset);
       break;
@@ -695,7 +634,6 @@ export const analyzePoints = (points: RawPoint[], options: ScoringOptions): Samp
     case 'seasonal':
       scoredPoints = buildSeasonalPoints(validPoints, threshold, window, Math.max(options.seasonalitySamples, 2), options.seasonalRefinement, options.severityPreset);
       break;
-    case 'zscore':
     default:
       scoredPoints = buildZScorePoints(validPoints, threshold, window, options.severityPreset);
       break;

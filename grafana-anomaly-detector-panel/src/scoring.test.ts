@@ -15,6 +15,47 @@ const baseOptions: ScoringOptions = {
 };
 
 describe('canonical anomaly scoring', () => {
+  it('harmonic is causal, warms for two cycles and retains direction policy', () => {
+    const points = Array.from({ length: 700 }, (_, i) => buildRawPoint(i * 60_000,
+      100 + 4 * Math.sin(i * 2 * Math.PI / 24) + Math.sin(i * 7) * .8 + (i >= 500 && i < 550 ? 20 : 0)));
+    const options: ScoringOptions = { ...baseOptions, algorithm: 'harmonic', seasonalitySamples: 24 };
+    const full = analyzePoints(points, options);
+    expect(full.slice(0, 48).every((p) => p.expected === null && !p.isAnomaly)).toBe(true);
+    expect(full[48].expected).not.toBeNull();
+    expect(analyzePoints(points.slice(0, 530), options)).toEqual(full.slice(0, 530));
+    expect(full.slice(500, 550).some((p) => p.isAnomaly)).toBe(true);
+    expect(analyzePoints(points, { ...options, anomalyDirection: 'low_mean' }).slice(500, 550).every((p) => !p.isAnomaly)).toBe(true);
+  });
+  it.each([-1, 1])('seasonal cycle trend follows chronological peers (direction %s)', (direction) => {
+    const points = Array.from({ length: 25 }, (_, i) => buildRawPoint(i * 60_000, 100 + direction * Math.floor(i / 4) * 2 + i % 4));
+    const result = analyzePoints(points, { ...baseOptions, algorithm: 'seasonal', baselineWindow: 3, seasonalitySamples: 4 });
+    expect(result[24].expected).toBe(100 + direction * 10);
+  });
+
+  it('does not label the return to baseline as another level shift', () => {
+    const values = [...Array.from({ length: 60 }, (_, i) => 100 + (i % 2 ? 0.5 : -0.5)), ...Array(6).fill(130), 100];
+    const result = analyzePoints(values.map((v, i) => buildRawPoint(i * 60_000, v)), { ...baseOptions, algorithm: 'level_shift', baselineWindow: 30 });
+    expect(result[result.length - 2].isAnomaly).toBe(true);
+    expect(result[result.length - 1].isAnomaly).toBe(false);
+    expect(result[result.length - 1].windowScore).toBe(0);
+  });
+
+  it.each(['zscore', 'mad', 'ewma', 'seasonal', 'level_shift'] as const)(
+    '%s decisions are causal and its quality gate blocks gap-driven spikes',
+    (algorithm) => {
+      const options = { ...baseOptions, algorithm, seasonalitySamples: 4 };
+      const points = Array.from({ length: 100 }, (_, index) => buildRawPoint(index * 60_000, 100 + (index % 2)));
+      const prefix = analyzePoints(points, options);
+      const extended = [...points, buildRawPoint(100 * 60_000 + 3_600_000, 180)];
+      expect(analyzePoints(extended, options).slice(0, points.length)).toEqual(prefix);
+      const gated = analyzePoints(extended, { ...options, dataQualityGate: true });
+      expect(gated[gated.length - 1]).toMatchObject({ dataQualityLabel: 'gappy', isAnomaly: false, severityScore: 0 });
+      const regular = [...points, buildRawPoint(100 * 60_000, 180)];
+      const valid = analyzePoints(regular, { ...options, dataQualityGate: true });
+      expect(valid[valid.length - 1]).toMatchObject({ dataQualityLabel: 'healthy', isAnomaly: true });
+    }
+  );
+
   it('uses the configured history window as the range-boundary warm-up', () => {
     expect(getWarmupHistoryPoints(12)).toBe(12);
     expect(getWarmupHistoryPoints(1)).toBe(3);

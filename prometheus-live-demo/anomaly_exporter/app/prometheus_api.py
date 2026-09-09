@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.parse
 import urllib.request
 
@@ -10,6 +11,18 @@ from .models import PrometheusRangeSeries, PrometheusSample
 
 class PrometheusQueryError(RuntimeError):
     pass
+
+
+def _parse_sample(pair: object, labels: dict[str, str]) -> PrometheusSample | None:
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    try:
+        timestamp, value = float(pair[0]), float(pair[1])
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(timestamp) or not math.isfinite(value):
+        return None
+    return PrometheusSample(labels=labels, value=value, timestamp=timestamp)
 
 
 class PrometheusClient:
@@ -39,17 +52,14 @@ class PrometheusClient:
             samples: list[PrometheusSample] = []
             for row in result:
                 metric = {str(key): str(value) for key, value in row.get('metric', {}).items()}
-                timestamp, value = row.get('value', [evaluation_time, '0'])
-                try:
-                    numeric_value = float(value)
-                except (TypeError, ValueError):
-                    continue
-                samples.append(PrometheusSample(labels=metric, value=numeric_value, timestamp=float(timestamp)))
+                sample = _parse_sample(row.get('value'), metric)
+                if sample is not None:
+                    samples.append(sample)
             return samples
 
         if result_type == 'scalar':
-            timestamp, value = result
-            return [PrometheusSample(labels={}, value=float(value), timestamp=float(timestamp))]
+            sample = _parse_sample(result, {})
+            return [sample] if sample is not None else []
 
         raise PrometheusQueryError(f'Unsupported Prometheus result type {result_type!r} for query {query!r}.')
 
@@ -84,12 +94,10 @@ class PrometheusClient:
         for row in result:
             metric = {str(key): str(value) for key, value in row.get('metric', {}).items()}
             samples: list[PrometheusSample] = []
-            for timestamp, value in row.get('values', []):
-                try:
-                    numeric_value = float(value)
-                except (TypeError, ValueError):
-                    continue
-                samples.append(PrometheusSample(labels=metric, value=numeric_value, timestamp=float(timestamp)))
+            for pair in row.get('values', []):
+                sample = _parse_sample(pair, metric)
+                if sample is not None:
+                    samples.append(sample)
             if samples:
                 series.append(PrometheusRangeSeries(labels=metric, samples=samples))
         return series

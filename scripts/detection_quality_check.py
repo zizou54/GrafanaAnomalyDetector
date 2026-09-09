@@ -37,6 +37,7 @@ PROFILES = {
     'ewma': AlgorithmProfile(4.5, 30),
     'seasonal': AlgorithmProfile(4.0, 8),
     'level_shift': AlgorithmProfile(5.0, 30),
+    'harmonic': AlgorithmProfile(4.0, 8),
 }
 
 
@@ -82,8 +83,15 @@ def evaluate(algorithm: str, values: list[float]) -> dict[str, float | int]:
         # CPU time measures scorer cost without charging unrelated Docker/host
         # scheduling pauses to the algorithm under test.
         started = time.process_time()
-        snapshots = score_points(rule, 'quality_fixture', {}, points)
-        durations.append(time.process_time() - started)
+        elapsed = 0.0
+        iterations = 0
+        # Short Windows process-time samples can be quantized at ~15.6 ms.
+        # Amortize clock resolution without changing the absolute 10k gate.
+        while elapsed < 0.5:
+            snapshots = score_points(rule, 'quality_fixture', {}, points)
+            iterations += 1
+            elapsed = time.process_time() - started
+        durations.append(elapsed / iterations)
     duration = median(durations)
     predicted = {index for index, snapshot in enumerate(snapshots) if snapshot.is_anomaly}
     windows = event_windows()
@@ -127,6 +135,16 @@ def production_quality_failures(results: dict) -> list[str]:
                 failures.append(f'{scenario}/{algorithm}: point precision below 0.7')
             if metrics['f1'] < 0.6:
                 failures.append(f'{scenario}/{algorithm}: point F1 below 0.6')
+    return failures
+
+
+def throughput_failures(results: dict) -> list[str]:
+    failures = []
+    for scenario, algorithms in results.items():
+        for algorithm, metrics in algorithms.items():
+            throughput = metrics['points_per_second']
+            if not math.isfinite(throughput) or throughput < 10_000:
+                failures.append(f'{scenario}/{algorithm}: scorer throughput below 10k points/s')
     return failures
 
 
@@ -174,8 +192,7 @@ def main() -> int:
         failures.append('hard/seasonal: seasonal shift not detected within 12 buckets')
     if hard['level_shift']['event_recall'] < 0.6 or hard['level_shift']['shift_onset'] < 0 or hard['level_shift']['shift_onset'] > 12:
         failures.append('hard/level_shift: difficult sustained change gate failed')
-    if any(metrics['points_per_second'] < 10_000 for metrics in clear.values()):
-        failures.append('clear: scorer throughput below 10k points/s')
+    failures.extend(throughput_failures(results))
 
     if not args.regression_only:
         failures.extend(production_quality_failures(results))
