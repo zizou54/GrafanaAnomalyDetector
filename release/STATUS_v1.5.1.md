@@ -1,6 +1,6 @@
 # 1.5.1 release gate
 
-Status: **LOCAL CODE/UI GATE PASSED; PACKAGE PUBLICATION CHECKS REQUIRED**.
+Status: **LOCAL RELEASE GATE PASSED**. Field deployment acceptance is separate.
 
 ## Fresh checks on 2026-09-09
 
@@ -21,6 +21,10 @@ Status: **LOCAL CODE/UI GATE PASSED; PACKAGE PUBLICATION CHECKS REQUIRED**.
 - Version-matched E2E guide, three fresh 1920x1440 light-theme screenshots and
   21-page illustrated PDF rebuilt and visually reviewed.
 - Packaging now rejects uncommitted package inputs and requires version-matched docs.
+- Extracted exporter imports and all three YAML configurations pass on Python
+  3.9.25. Both ZIP manifests, checksums, file inventory, empty distribution state,
+  Unix launcher permissions and matching source commits pass package validation.
+- PDF, PNG and ZIP are explicitly binary in Git to prevent line-ending corruption.
 
 Evidence retained locally under output/release-*.log; logs and runtime secrets
 are not distribution assets. A failed first run is not removed by a retry.
@@ -40,6 +44,6 @@ The earlier extra-36-route cycle took 13.702 seconds against a 5-second configur
 interval. Benchmark CPU throughput excludes source/sink I/O and does not remove
 that capacity limit. Never claim zero false positives or unlimited 7/24 capacity.
 
-Release packaging must additionally pass extracted Python 3.9 import/config,
-manifest, checksum, matched commit and secret/runtime exclusion checks before
-publishing. Historical v1.5.0 and v1.5.0-r1 assets must remain unchanged.
+The final source commit and ZIP hashes are recorded in BUILD_INFO.json and
+SHA256SUMS_v1.5.1.txt; publication rechecks uploaded asset size and SHA-256.
+Historical v1.5.0 and v1.5.0-r1 assets remain unchanged.
